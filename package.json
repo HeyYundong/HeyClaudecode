@@ -1,0 +1,22 @@
+{
+  "name": "heyclaude",
+  "version": "0.1.0",
+  "description": "按项目分组管理 Claude Code agents 的终端 TUI（不修改 Claude Code 本身）",
+  "type": "module",
+  "bin": {
+    "heyclaude": "bin/heyclaude.js",
+    "hcc": "bin/heyclaude.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ink": "^8.0.0",
+    "react": "^19.3.1"
+  }
+}
