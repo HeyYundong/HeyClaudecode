@@ -63,8 +63,8 @@ function ProjectList({projects, cursor, sessions, loading, columns, rows}) {
 	}
 
 	const nameWidth = Math.min(28, Math.max(...projects.map(p => p.name.length)) + 2);
-	const statsWidth = 26;
-	const pathWidth = Math.max(10, columns - nameWidth - statsWidth - 6);
+	const statsWidth = 28;
+	const pathWidth = Math.max(10, columns - nameWidth - statsWidth - 4);
 
 	// 列表过长时让光标保持在可见窗口内
 	const visible = Math.max(3, rows - 9);
@@ -90,13 +90,13 @@ function ProjectList({projects, cursor, sessions, loading, columns, rows}) {
 				),
 				h(
 					Box,
-					{width: pathWidth},
-					h(Text, {dimColor: true, wrap: 'truncate-middle'}, missing ? `${project.path}（目录不存在）` : project.path),
+					{width: statsWidth, flexShrink: 0},
+					h(Stats, {stats: sessions ? statsFor(sessions, project.path) : null, loading}),
 				),
 				h(
 					Box,
-					{width: statsWidth, justifyContent: 'flex-end'},
-					h(Stats, {stats: sessions ? statsFor(sessions, project.path) : null, loading}),
+					{width: pathWidth},
+					h(Text, {dimColor: true, wrap: 'truncate-middle'}, missing ? `${project.path}（目录不存在）` : project.path),
 				),
 			);
 		}),
@@ -208,6 +208,7 @@ function AddProject({projects, sessions, onDone, onCancel}) {
 
 export function App({initialProjects, initialPath, initialMessage, forwardedArgs}) {
 	const {exit} = useApp();
+	// 根节点比终端窄一列：有的终端（如 Windows Terminal）写满最后一列会被截断
 	const {columns, rows} = useTerminalSize();
 	const [projects, setProjects] = useState(initialProjects);
 	const [cursor, setCursorState] = useState(() => Math.max(0, projects.findIndex(p => p.path === initialPath)));
@@ -290,7 +291,7 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 	if (screen === 'add') {
 		return h(
 			Box,
-			{flexDirection: 'column'},
+			{flexDirection: 'column', width: columns - 1},
 			h(Header, {subtitle: extra}),
 			h(AddProject, {
 				projects,
@@ -318,7 +319,7 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 
 	return h(
 		Box,
-		{flexDirection: 'column'},
+		{flexDirection: 'column', width: columns - 1},
 		h(Header, {subtitle: extra}),
 		h(ProjectList, {projects, cursor, sessions, loading, columns, rows}),
 		screen === 'delete' && current

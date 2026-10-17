@@ -43,12 +43,18 @@ try {
 }
 
 async function showList(initialPath, initialMessage) {
-	const instance = render(
-		React.createElement(App, {initialProjects: projects, initialPath, initialMessage, forwardedArgs}),
-		{alternateScreen: true},
-	);
-	const result = await instance.waitUntilExit();
-	return result ?? {type: 'quit'};
+	// 自己切换备用屏幕：Ink 的 alternateScreen 不把光标移到左上角，
+	// Windows Terminal 等会沿用原来的光标行，界面就画到了屏幕底部
+	process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H');
+	try {
+		const instance = render(
+			React.createElement(App, {initialProjects: projects, initialPath, initialMessage, forwardedArgs}),
+		);
+		const result = await instance.waitUntilExit();
+		return result ?? {type: 'quit'};
+	} finally {
+		process.stdout.write('\x1b[?1049l');
+	}
 }
 
 function runAgents(project) {
