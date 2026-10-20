@@ -6,6 +6,8 @@ import {completePath} from './complete.js';
 
 const h = React.createElement;
 const REFRESH_MS = 10_000;
+// 多位序号：两次数字键间隔超过这个时间就按已输入的序号进入
+const DIGIT_WAIT_MS = 600;
 
 function useTerminalSize() {
 	const {stdout} = useStdout();
@@ -62,9 +64,10 @@ function ProjectList({projects, cursor, sessions, loading, columns, rows}) {
 		);
 	}
 
+	const numberWidth = String(projects.length).length + 2;
 	const nameWidth = Math.min(28, Math.max(...projects.map(p => p.name.length)) + 2);
 	const statsWidth = 28;
-	const pathWidth = Math.max(10, columns - nameWidth - statsWidth - 4);
+	const pathWidth = Math.max(10, columns - numberWidth - nameWidth - statsWidth - 4);
 
 	// 列表过长时让光标保持在可见窗口内
 	const visible = Math.max(3, rows - 9);
@@ -83,6 +86,11 @@ function ProjectList({projects, cursor, sessions, loading, columns, rows}) {
 				Box,
 				{key: project.path},
 				h(Box, {width: 2}, h(Text, {color: 'red'}, selected ? '❯' : ' ')),
+				h(
+					Box,
+					{width: numberWidth, flexShrink: 0},
+					h(Text, {color: selected ? 'red' : undefined, dimColor: !selected}, `${index + 1}.`.padStart(numberWidth - 1)),
+				),
 				h(
 					Box,
 					{width: nameWidth},
@@ -252,10 +260,48 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 
 	const current = projects[cursor];
 
+	const enterProject = project => {
+		if (!dirExists(project.path)) {
+			return setMessage({text: `目录不存在：${project.path}`, color: 'red'});
+		}
+		return exit({type: 'enter', project});
+	};
+
+	// 数字键按序号进入；序号还可能更长时（比如有 12 个项目时按了 1）稍等下一位
+	const digitsRef = useRef('');
+	const digitTimerRef = useRef(null);
+	const clearDigits = () => {
+		clearTimeout(digitTimerRef.current);
+		digitsRef.current = '';
+	};
+	useEffect(() => clearDigits, []);
+
+	const typeDigit = digit => {
+		clearTimeout(digitTimerRef.current);
+		const digits = digitsRef.current + digit;
+		const n = Number(digits);
+		if (n < 1 || n > projects.length) {
+			clearDigits();
+			return setMessage({text: `没有序号 ${digits} 的项目`, color: 'yellow'});
+		}
+		setCursor(n - 1);
+		if (n * 10 > projects.length) {
+			clearDigits();
+			return enterProject(projects[n - 1]);
+		}
+		digitsRef.current = digits;
+		digitTimerRef.current = setTimeout(() => {
+			digitsRef.current = '';
+			enterProject(projects[n - 1]);
+		}, DIGIT_WAIT_MS);
+	};
+
 	useInput(
 		(input, key) => {
 			const current = projects[cursorRef.current];
 			setMessage(null);
+			if (/^[0-9]$/.test(input)) return typeDigit(input);
+			clearDigits();
 			if (input === 'q' || key.escape) return exit({type: 'quit'});
 			if (key.upArrow || input === 'k') return setCursor(c => Math.max(0, c - 1));
 			if (key.downArrow || input === 'j') return setCursor(c => Math.min(projects.length - 1, c + 1));
@@ -263,12 +309,7 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 			if (input === 'r') return refresh();
 			if (!current) return;
 			if (input === 'd') return setScreen('delete');
-			if (key.return) {
-				if (!dirExists(current.path)) {
-					return setMessage({text: `目录不存在：${current.path}`, color: 'red'});
-				}
-				return exit({type: 'enter', project: current});
-			}
+			if (key.return) return enterProject(current);
 		},
 		{isActive: screen === 'list'},
 	);
@@ -334,6 +375,7 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 			keys: [
 				['↑↓', '选择'],
 				['Enter', '进入'],
+				...(projects.length ? [[projects.length > 9 ? '序号' : projects.length > 1 ? `1-${projects.length}` : '1', '直接进入']] : []),
 				['a', '添加'],
 				['d', '删除'],
 				['r', '刷新'],
