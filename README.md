@@ -21,13 +21,17 @@ hcc             # 或 heyclaude
 ```
 
 ```
-╭────────────────────────────────────────────────────────────────────╮
-│ HeyClaude  按项目管理 claude agents                                 │
-╰────────────────────────────────────────────────────────────────────╯
-   HeyAgent        /mnt/toshiba/Projects/HeyAgent        0 运行 · 5 空闲 · 1 完成
- ❯ EdgePredictfun  /mnt/toshiba/Projects/EdgePredictfun  1 运行 · 1 空闲 · 0 完成
+╭──────────────────────────────────────────────────────────────────────╮
+│ HeyClaude  按项目管理 claude agents                                   │
+╰──────────────────────────────────────────────────────────────────────╯
+ ❯ HeyAgent     1 运行 · 2 空闲 · 0 完成      /home/me/Projects/HeyAgent
+   my-api       0 运行 · 0 空闲 · 3 完成      /home/me/Projects/my-api
+   website      0 运行 · 1 空闲 · 1 完成      /home/me/Projects/website
+
 ↑↓ 选择  ·  Enter 进入  ·  a 添加  ·  d 删除  ·  r 刷新  ·  q 退出
 ```
+
+项目按名字排序（不区分大小写）。目录被删掉或移走的项目会在路径后标注「目录不存在」，不能进入，按 `d` 移除即可。
 
 | 按键 | 作用 |
 | --- | --- |
@@ -55,12 +59,12 @@ hcc --model opus --effort high
 
 ## 数据
 
-项目列表保存在 `~/.config/heyclaude/projects.json`（如果设置了 `$XDG_CONFIG_HOME` 就用它），可以直接手动编辑，比如改项目名：
+项目列表保存在 `~/.config/heyclaude/projects.json`（如果设置了 `$XDG_CONFIG_HOME` 就用它），可以直接手动编辑，比如改项目名（显示顺序跟着名字走，文件里的顺序无所谓）：
 
 ```json
 {
   "projects": [
-    {"name": "EdgePredictfun", "path": "/mnt/toshiba/Projects/EdgePredictfun", "addedAt": "2026-10-17T15:49:50.870Z"}
+    {"name": "my-api", "path": "/home/me/Projects/my-api", "addedAt": "2026-10-17T15:49:50.870Z"}
   ]
 }
 ```
@@ -70,5 +74,5 @@ hcc --model opus --effort high
 - `bin/heyclaude.js`：入口。主循环是"显示列表 → 把终端交给 `claude agents` → 回到列表"
 - `src/app.js`：Ink 界面（列表、添加、删除确认）
 - `src/sessions.js`：读取 `claude agents --json` 并按项目统计
-- `src/store.js`：projects.json 的读写
+- `src/store.js`：projects.json 的读写、校验和排序
 - `src/complete.js`：路径 Tab 补全

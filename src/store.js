@@ -18,10 +18,15 @@ export function expandPath(input) {
 	return path.resolve(p);
 }
 
+// 按名字排序，不区分大小写，数字按数值比较（project2 在 project10 前面）
+export function sortProjects(projects) {
+	return [...projects].sort((a, b) => a.name.localeCompare(b.name, undefined, {sensitivity: 'base', numeric: true}));
+}
+
 export function loadProjects() {
 	try {
 		const data = JSON.parse(fs.readFileSync(projectsFile(), 'utf8'));
-		return Array.isArray(data.projects) ? data.projects : [];
+		return Array.isArray(data.projects) ? sortProjects(data.projects) : [];
 	} catch (error) {
 		if (error.code === 'ENOENT') return [];
 		throw new Error(`无法读取 ${projectsFile()}: ${error.message}`);
@@ -53,7 +58,7 @@ export function addProject(projects, rawPath) {
 		path: resolved,
 		addedAt: new Date().toISOString(),
 	};
-	return {projects: [...projects, project], project};
+	return {projects: sortProjects([...projects, project]), project};
 }
 
 export function removeProject(projects, projectPath) {

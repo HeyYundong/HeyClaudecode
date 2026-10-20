@@ -299,7 +299,7 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 				onCancel: () => setScreen('list'),
 				onDone: ({projects: next, project}) => {
 					if (persist(next)) {
-						setCursor(next.length - 1);
+						setCursor(next.findIndex(p => p.path === project.path));
 						setMessage({text: `已添加 ${project.name}`, color: 'green'});
 					}
 					setScreen('list');
