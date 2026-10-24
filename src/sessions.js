@@ -1,7 +1,5 @@
 import {execFile} from 'node:child_process';
 
-const FINISHED_STATES = new Set(['done', 'stopped', 'failed']);
-
 // 读取 `claude agents --json --all` 的会话列表
 export function fetchSessions() {
 	return new Promise(resolve => {
@@ -25,11 +23,18 @@ export function fetchSessions() {
 	});
 }
 
-export function classify(session) {
-	if (session.kind === 'background' && FINISHED_STATES.has(session.state)) return 'done';
-	if (session.status === 'busy') return 'working';
-	if (session.kind === 'background') return 'working';
-	return 'idle';
+// 会话归类：
+//   working   正在运行（包括已结束后又被你唤醒的后台任务）
+//   blocked   在等你回复
+//   pending   后台任务已结束，等你确认
+//   confirmed 后台任务已结束，你已经确认过
+//   idle      空闲的交互会话（不需要处理，不统计）
+// 后台任务只要不是运行中或等你回复就算结束，Claude Code 以后新增的结束状态也会进待确认
+export function classify(session, confirmed = {}) {
+	if (session.status === 'busy' || session.state === 'working') return 'working';
+	if (session.state === 'blocked') return 'blocked';
+	if (session.kind !== 'background') return 'idle';
+	return confirmed[session.sessionId] ? 'confirmed' : 'pending';
 }
 
 // 与 `claude agents --cwd` 一致：目录本身及其子目录（含 .claude/worktrees）都算
@@ -40,12 +45,21 @@ export function isUnder(cwd, projectPath) {
 	return cwd.startsWith(prefix);
 }
 
-export function statsFor(sessions, projectPath) {
-	const stats = {working: 0, idle: 0, done: 0};
-	for (const s of sessions) {
-		if (isUnder(s.cwd, projectPath)) stats[classify(s)]++;
-	}
+export function sessionsFor(sessions, projectPath) {
+	return sessions.filter(s => isUnder(s.cwd, projectPath));
+}
+
+export function statsFor(sessions, projectPath, confirmed) {
+	const stats = {working: 0, blocked: 0, pending: 0, confirmed: 0, idle: 0};
+	for (const s of sessionsFor(sessions, projectPath)) stats[classify(s, confirmed)]++;
 	return stats;
+}
+
+// 已确认但又开始运行或在等你回复的会话：它有了新进展，需要重新审阅
+export function reactivated(sessions, confirmed) {
+	return sessions
+		.filter(s => confirmed[s.sessionId] && ['working', 'blocked'].includes(classify(s)))
+		.map(s => s.sessionId);
 }
 
 // worktree 会话归到它所属的项目目录

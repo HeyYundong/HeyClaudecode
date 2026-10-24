@@ -42,13 +42,13 @@ try {
 	process.exit(1);
 }
 
-async function showList(initialPath, initialMessage) {
+async function showList(initialPath, initialMessage, initialScreen) {
 	// 自己切换备用屏幕：Ink 的 alternateScreen 不把光标移到左上角，
 	// Windows Terminal 等会沿用原来的光标行，界面就画到了屏幕底部
 	process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H');
 	try {
 		const instance = render(
-			React.createElement(App, {initialProjects: projects, initialPath, initialMessage, forwardedArgs}),
+			React.createElement(App, {initialProjects: projects, initialPath, initialMessage, initialScreen, forwardedArgs}),
 		);
 		const result = await instance.waitUntilExit();
 		return result ?? {type: 'quit'};
@@ -78,10 +78,13 @@ function runAgents(project) {
 
 let lastPath;
 let message;
+let returnTo;
 for (;;) {
-	const action = await showList(lastPath, message);
+	const action = await showList(lastPath, message, returnTo);
 	if (action.type !== 'enter') break;
 	lastPath = action.project.path;
+	// 从审阅页按 o 进入的，退出 agents 后回到审阅页
+	returnTo = action.returnTo;
 	message = runAgents(action.project);
 	// 重新读取，以防在别处改过 projects.json
 	try {

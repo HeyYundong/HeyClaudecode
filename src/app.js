@@ -1,8 +1,10 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {Box, Text, useApp, useInput, useStdout} from 'ink';
 import {addProject, dirExists, removeProject, saveProjects} from './store.js';
-import {fetchSessions, statsFor, suggestPaths} from './sessions.js';
+import {fetchSessions, reactivated, statsFor, suggestPaths} from './sessions.js';
 import {completePath} from './complete.js';
+import {loadReviews, saveReviews, withoutConfirmed} from './reviews.js';
+import {REVIEW_KEYS, ReviewPage} from './review.js';
 
 const h = React.createElement;
 const REFRESH_MS = 10_000;
@@ -44,17 +46,19 @@ function Footer({keys, message}) {
 
 function Stats({stats, loading}) {
 	if (!stats) return h(Text, {dimColor: true}, loading ? '统计中…' : '');
+	const part = (n, label, color) => h(Text, {color: n ? color : undefined, dimColor: !n, bold: Boolean(n) && color !== 'yellow'}, `${n} ${label}`);
 	return h(
 		Text,
 		null,
-		h(Text, {color: stats.working ? 'yellow' : undefined, dimColor: !stats.working}, `${stats.working} 运行`),
+		part(stats.working, '运行', 'yellow'),
 		h(Text, {dimColor: true}, ' · '),
-		h(Text, {color: stats.idle ? 'cyan' : undefined, dimColor: !stats.idle}, `${stats.idle} 空闲`),
-		h(Text, {dimColor: true}, ` · ${stats.done} 完成`),
+		part(stats.blocked, '等你回复', 'magenta'),
+		h(Text, {dimColor: true}, ' · '),
+		part(stats.pending, '待确认', 'cyan'),
 	);
 }
 
-function ProjectList({projects, cursor, sessions, loading, columns, rows}) {
+function ProjectList({projects, cursor, sessions, confirmed, loading, columns, rows}) {
 	if (projects.length === 0) {
 		return h(
 			Box,
@@ -66,7 +70,7 @@ function ProjectList({projects, cursor, sessions, loading, columns, rows}) {
 
 	const numberWidth = String(projects.length).length + 2;
 	const nameWidth = Math.min(28, Math.max(...projects.map(p => p.name.length)) + 2);
-	const statsWidth = 28;
+	const statsWidth = 32;
 	const pathWidth = Math.max(10, columns - numberWidth - nameWidth - statsWidth - 4);
 
 	// 列表过长时让光标保持在可见窗口内
@@ -99,7 +103,7 @@ function ProjectList({projects, cursor, sessions, loading, columns, rows}) {
 				h(
 					Box,
 					{width: statsWidth, flexShrink: 0},
-					h(Stats, {stats: sessions ? statsFor(sessions, project.path) : null, loading}),
+					h(Stats, {stats: sessions ? statsFor(sessions, project.path, confirmed) : null, loading}),
 				),
 				h(
 					Box,
@@ -214,7 +218,7 @@ function AddProject({projects, sessions, onDone, onCancel}) {
 	);
 }
 
-export function App({initialProjects, initialPath, initialMessage, forwardedArgs}) {
+export function App({initialProjects, initialPath, initialMessage, initialScreen, forwardedArgs}) {
 	const {exit} = useApp();
 	// 根节点比终端窄一列：有的终端（如 Windows Terminal）写满最后一列会被截断
 	const {columns, rows} = useTerminalSize();
@@ -225,10 +229,35 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 		cursorRef.current = typeof update === 'function' ? update(cursorRef.current) : update;
 		setCursorState(cursorRef.current);
 	};
-	const [screen, setScreen] = useState('list'); // list | add | delete
+	// list | add | delete | review（review 时 cursor 指向正在审阅的项目）
+	const [screen, setScreen] = useState(() =>
+		initialScreen === 'review' && initialProjects.some(p => p.path === initialPath) ? 'review' : 'list',
+	);
 	const [sessions, setSessions] = useState(null);
 	const [loading, setLoading] = useState(false);
 	const [message, setMessage] = useState(initialMessage ?? null);
+
+	// 你确认过的会话。用 ref 保存最新值，异步刷新时也能读到
+	const [confirmed, setConfirmedState] = useState(() => {
+		try {
+			return loadReviews();
+		} catch (e) {
+			setTimeout(() => setMessage({text: e.message, color: 'red'}));
+			return {};
+		}
+	});
+	const confirmedRef = useRef(confirmed);
+	const saveConfirmed = useCallback(next => {
+		try {
+			saveReviews(next);
+		} catch (e) {
+			setMessage({text: `保存确认记录失败：${e.message}`, color: 'red'});
+			return false;
+		}
+		confirmedRef.current = next;
+		setConfirmedState(next);
+		return true;
+	}, []);
 
 	const refresh = useCallback(async () => {
 		setLoading(true);
@@ -238,8 +267,11 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 			setMessage({text: `会话统计失败：${result.error}`, color: 'red'});
 			return;
 		}
+		// 已确认的任务又被唤醒了：取消确认，等它再结束时重新进入待确认
+		const revived = reactivated(result.sessions, confirmedRef.current);
+		if (revived.length) saveConfirmed(withoutConfirmed(confirmedRef.current, revived));
 		setSessions(result.sessions);
-	}, []);
+	}, [saveConfirmed]);
 
 	useEffect(() => {
 		refresh();
@@ -260,11 +292,12 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 
 	const current = projects[cursor];
 
-	const enterProject = project => {
+	// 进入 claude agents；returnTo 决定退出 agents 后回到列表还是审阅页
+	const enterProject = (project, returnTo = 'list') => {
 		if (!dirExists(project.path)) {
 			return setMessage({text: `目录不存在：${project.path}`, color: 'red'});
 		}
-		return exit({type: 'enter', project});
+		return exit({type: 'enter', project, returnTo});
 	};
 
 	// 数字键按序号进入；序号还可能更长时（比如有 12 个项目时按了 1）稍等下一位
@@ -309,7 +342,7 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 			if (input === 'r') return refresh();
 			if (!current) return;
 			if (input === 'd') return setScreen('delete');
-			if (key.return) return enterProject(current);
+			if (key.return) return setScreen('review');
 		},
 		{isActive: screen === 'list'},
 	);
@@ -328,6 +361,28 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 	);
 
 	const extra = forwardedArgs.length ? `claude agents ${forwardedArgs.join(' ')}` : '按项目管理 claude agents';
+
+	if (screen === 'review' && current) {
+		return h(
+			Box,
+			{flexDirection: 'column', width: columns - 1},
+			h(Header, {subtitle: `${current.name} · ${current.path}`}),
+			h(ReviewPage, {
+				project: current,
+				sessions,
+				loading,
+				confirmed,
+				saveConfirmed,
+				setMessage,
+				columns,
+				rows,
+				onOpen: () => enterProject(current, 'review'),
+				onBack: () => setScreen('list'),
+				onRefresh: refresh,
+			}),
+			h(Footer, {message, keys: REVIEW_KEYS}),
+		);
+	}
 
 	if (screen === 'add') {
 		return h(
@@ -362,7 +417,7 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 		Box,
 		{flexDirection: 'column', width: columns - 1},
 		h(Header, {subtitle: extra}),
-		h(ProjectList, {projects, cursor, sessions, loading, columns, rows}),
+		h(ProjectList, {projects, cursor, sessions, confirmed, loading, columns, rows}),
 		screen === 'delete' && current
 			? h(
 					Box,
@@ -374,7 +429,7 @@ export function App({initialProjects, initialPath, initialMessage, forwardedArgs
 			message,
 			keys: [
 				['↑↓', '选择'],
-				['Enter', '进入'],
+				['Enter', '审阅'],
 				...(projects.length ? [[projects.length > 9 ? '序号' : projects.length > 1 ? `1-${projects.length}` : '1', '直接进入']] : []),
 				['a', '添加'],
 				['d', '删除'],
