@@ -1,6 +1,9 @@
 //! 应用状态。ui/ 只读这里的字段来画界面，按键和事件处理也在这里。
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+
+use ratatui::layout::{Position, Rect};
 
 use crate::claude::process::ClaudeProcess;
 use crate::model::{ConvId, Conversation, FileChange, Project, SessionInfo};
@@ -35,6 +38,24 @@ pub struct InputState {
     pub text: String,
     /// 光标位置，按字符（char）计
     pub cursor: usize,
+}
+
+/// 鼠标能点的区域，ui 每次绘制时登记
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hit {
+    Sidebar,
+    /// sidebar_items() 的下标
+    SidebarItem(usize),
+    Chat,
+    Input,
+    Panel,
+    PanelTab(PanelTab),
+    /// 权限确认框的第几个选项
+    Permission(usize),
+    /// 弹窗框内（点框外关闭弹窗）
+    OverlayBox,
+    /// switcher_matches() 的下标
+    SwitcherItem(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +118,8 @@ pub struct App {
     pub claude_args: Vec<String>,
     pub next_conv: ConvId,
     pub should_quit: bool,
+    /// 上一帧登记的可点击区域，后登记的在上层
+    pub hits: RefCell<Vec<(Rect, Hit)>>,
 }
 
 impl App {
@@ -115,6 +138,17 @@ impl App {
 
     pub fn current_conv(&self) -> Option<&Conversation> {
         self.current.and_then(|id| self.convs.get(&id))
+    }
+
+    pub fn add_hit(&self, area: Rect, hit: Hit) {
+        if area.width > 0 && area.height > 0 {
+            self.hits.borrow_mut().push((area, hit));
+        }
+    }
+
+    /// 坐标处最上层的可点击区域
+    pub fn hit_at(&self, x: u16, y: u16) -> Option<Hit> {
+        self.hits.borrow().iter().rev().find(|(r, _)| r.contains(Position { x, y })).map(|(_, h)| *h)
     }
 
     /// 按标题或分组做不区分大小写的子串匹配，最多 50 条。

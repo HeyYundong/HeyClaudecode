@@ -11,7 +11,7 @@ use ratatui::widgets::{Block as WBlock, BorderType, Borders, Paragraph};
 use super::text::{self, pad, split_row, truncate, wrap, wrap_plain};
 use super::theme::*;
 use super::{input, markdown, tool};
-use crate::app::App;
+use crate::app::{App, Hit};
 use crate::model::{Block, Conversation, PermissionRequest};
 
 /// Bash 输出最多显示几行
@@ -40,6 +40,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(1),
     ])
     .areas(area);
+    app.add_hit(Rect { height: title.height + sep.height + body.height, ..title }, Hit::Chat);
+    app.add_hit(input_area, Hit::Input);
 
     match conv {
         Some(c) => {
@@ -69,6 +71,15 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     }
 
     if let Some(lines) = perm {
+        // 三个选项是框内最后三行
+        let first = perm_area.y + 1 + lines.len().saturating_sub(3) as u16;
+        for i in 0..3u16 {
+            let y = first + i;
+            if y + 1 < perm_area.y + perm_area.height {
+                let r = Rect { x: perm_area.x + 1, y, width: perm_area.width.saturating_sub(2), height: 1 };
+                app.add_hit(r, Hit::Permission(i as usize));
+            }
+        }
         let block = WBlock::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)

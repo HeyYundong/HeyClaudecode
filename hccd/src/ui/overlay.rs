@@ -10,14 +10,14 @@ use ratatui::widgets::{Block as WBlock, BorderType, Borders, Clear, Padding, Par
 
 use super::text::{self, pad, split_row, str_width, truncate_left};
 use super::theme::*;
-use crate::app::{App, Overlay};
+use crate::app::{App, Hit, Overlay};
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App, ov: &Overlay) {
     shade(f, area);
     match ov {
         Overlay::Switcher { query, selected } => switcher(f, area, app, query, *selected),
-        Overlay::AddProject { input } => add_project(f, area, input),
-        Overlay::Help => help(f, area),
+        Overlay::AddProject { input } => add_project(f, area, app, input),
+        Overlay::Help => help(f, area, app),
     }
 }
 
@@ -112,14 +112,15 @@ fn switcher(f: &mut Frame, area: Rect, app: &App, query: &str, selected: usize) 
     let mut fixed = vec![head, Line::styled("─".repeat(w), fg(BORDER))];
 
     // 列表：按顺序遇到分组变化就插标题
-    let mut rows: Vec<(Line<'static>, bool)> = Vec::new();
+    // 每行带上它对应的结果下标，分组标题和空行为 None
+    let mut rows: Vec<(Line<'static>, Option<usize>)> = Vec::new();
     let mut last_group: Option<&str> = None;
     for (i, e) in matches.iter().enumerate() {
         if last_group != Some(e.group.as_str()) {
             if last_group.is_some() {
-                rows.push((Line::default(), false));
+                rows.push((Line::default(), None));
             }
-            rows.push((Line::from(highlight(&e.group, query, bold(dim()))), false));
+            rows.push((Line::from(highlight(&e.group, query, bold(dim()))), None));
             last_group = Some(&e.group);
         }
         let (sym, color) = status_symbol(e.status);
@@ -134,23 +135,30 @@ fn switcher(f: &mut Frame, area: Rect, app: &App, query: &str, selected: usize) 
                 s.style = s.style.bg(SEL_BG);
             }
         }
-        rows.push((line, sel));
+        rows.push((line, Some(i)));
     }
     if matches.is_empty() {
-        rows.push((Line::styled("没有匹配的会话", dim()), false));
+        rows.push((Line::styled("没有匹配的会话", dim()), None));
     }
 
     // 框高随内容，最多 24 行：输入行、分隔线、列表、空行、提示，加上下边框
     let want = (rows.len() + 6).clamp(10, 24) as u16;
     let r = centered(area, box_w, want.min(area.height.saturating_sub(2)).max(5));
     let inner = frame(f, r, None);
+    app.add_hit(r, Hit::OverlayBox);
     if inner.height == 0 {
         return;
     }
     let list_h = (inner.height as usize).saturating_sub(fixed.len() + 2);
-    let sel_row = rows.iter().position(|(_, s)| *s).unwrap_or(0);
+    let sel_row = rows.iter().position(|(_, s)| *s == Some(selected)).unwrap_or(0);
     let offset = (sel_row + 1).saturating_sub(list_h).min(rows.len().saturating_sub(list_h));
-    fixed.extend(rows.into_iter().skip(offset).take(list_h).map(|(l, _)| l));
+    let top = inner.y + fixed.len() as u16;
+    for (k, (line, item)) in rows.into_iter().skip(offset).take(list_h).enumerate() {
+        if let Some(i) = item {
+            app.add_hit(Rect { y: top + k as u16, height: 1, ..inner }, Hit::SwitcherItem(i));
+        }
+        fixed.push(line);
+    }
     f.render_widget(Paragraph::new(fixed), inner);
     if inner.height as usize > 3 {
         let hint = Rect { y: inner.y + inner.height - 1, height: 1, ..inner };
@@ -158,9 +166,10 @@ fn switcher(f: &mut Frame, area: Rect, app: &App, query: &str, selected: usize) 
     }
 }
 
-fn add_project(f: &mut Frame, area: Rect, input: &str) {
+fn add_project(f: &mut Frame, area: Rect, app: &App, input: &str) {
     let r = centered(area, 64.min(area.width.saturating_sub(4)).max(20), 7);
     let inner = frame(f, r, Some("添加项目"));
+    app.add_hit(r, Hit::OverlayBox);
     let w = inner.width as usize;
     let shown = truncate_left(input, w.saturating_sub(3));
     let lines = vec![
@@ -186,13 +195,16 @@ pub const HELP_KEYS: &[(&str, &str)] = &[
     ("a", "添加项目"),
     ("d", "移除项目"),
     ("Esc", "中断当前轮 / 关闭弹窗"),
+    ("鼠标", "点击打开、选择；滚轮滚动"),
+    ("Shift+拖动", "选中文字复制"),
     ("Ctrl+C", "退出"),
 ];
 
-fn help(f: &mut Frame, area: Rect) {
+fn help(f: &mut Frame, area: Rect, app: &App) {
     let h = HELP_KEYS.len() as u16 + 4;
     let r = centered(area, 48.min(area.width), h);
     let inner = frame(f, r, Some("快捷键"));
+    app.add_hit(r, Hit::OverlayBox);
     let key_w = HELP_KEYS.iter().map(|(k, _)| str_width(k)).max().unwrap_or(0);
     let mut lines: Vec<Line> = HELP_KEYS
         .iter()

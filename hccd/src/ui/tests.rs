@@ -36,6 +36,7 @@ fn empty_app() -> App {
         claude_args: Vec::new(),
         next_conv: 1,
         should_quit: false,
+        hits: Default::default(),
     }
 }
 
@@ -315,6 +316,68 @@ fn permission_box() {
     for s in ["Claude 想运行这条命令", "rm -rf dist/ && npm run build", "工作目录", "会删除文件", "1. 允许一次", "› 2. 允许，本会话不再询问", "3. 拒绝", "◐ 等待确认"] {
         assert!(t.contains(s), "缺少 {s}\n{t}");
     }
+}
+
+/// 文字 s 第一次出现的位置（列, 行）
+fn locate(buf: &Buffer, s: &str) -> Option<(u16, u16)> {
+    for y in 0..buf.area.height {
+        let mut text = String::new();
+        let mut cols = Vec::new();
+        let mut x = 0;
+        while x < buf.area.width {
+            let sym = buf[(x, y)].symbol();
+            for ch in sym.chars() {
+                text.push(ch);
+                cols.push(x);
+            }
+            // 宽字符后面的占位格跳过
+            x += super::text::str_width(sym).max(1) as u16;
+        }
+        if let Some(b) = text.find(s) {
+            return Some((cols[text[..b].chars().count()], y));
+        }
+    }
+    None
+}
+
+#[test]
+fn click_targets_follow_layout() {
+    use crate::app::{Hit, SidebarItem};
+    let mut app = demo_app();
+    app.sidebar_selected = 0;
+    let c = app.convs.get_mut(&1).unwrap();
+    c.permission = Some(PermissionRequest {
+        request_id: "r1".into(),
+        tool_name: "Bash".into(),
+        input: json!({"command": "ls"}),
+        description: None,
+        suggestions: json!([]),
+    });
+    let buf = render(&app, 160, 45);
+    let at = |s: &str| {
+        let (x, y) = locate(&buf, s).unwrap_or_else(|| panic!("找不到 {s}"));
+        app.hit_at(x, y)
+    };
+
+    let items = app.sidebar_items();
+    assert_eq!(at("+ 新对话"), Some(Hit::SidebarItem(0)));
+    let blog = items.iter().position(|it| *it == SidebarItem::Project(1)).unwrap();
+    assert_eq!(at("blog-site"), Some(Hit::SidebarItem(blog)));
+    assert_eq!(at("项目 3"), Some(Hit::Sidebar));
+    assert_eq!(at("1. 允许一次"), Some(Hit::Permission(0)));
+    assert_eq!(at("2. 允许，本会话不再询问"), Some(Hit::Permission(1)));
+    assert_eq!(at("3. 拒绝"), Some(Hit::Permission(2)));
+    assert_eq!(at("回复 Claude…"), Some(Hit::Input));
+    assert_eq!(at("变更 3"), Some(Hit::PanelTab(PanelTab::Changes)));
+    assert_eq!(at("待办 2/4"), Some(Hit::PanelTab(PanelTab::Todos)));
+    assert_eq!(at("src/ui.js"), Some(Hit::Panel));
+
+    app.overlay = Some(Overlay::Switcher { query: "fold".into(), selected: 0 });
+    let buf = render(&app, 160, 45);
+    let (x, y) = locate(&buf, "文章目录 foldable 侧栏").unwrap();
+    let Some(Hit::SwitcherItem(i)) = app.hit_at(x, y) else { panic!("没有登记 Switcher 条目") };
+    assert_eq!(app.switcher_matches("fold")[i].label, "文章目录 foldable 侧栏");
+    assert_eq!(app.hit_at(0, 0), None);
 }
 
 #[test]

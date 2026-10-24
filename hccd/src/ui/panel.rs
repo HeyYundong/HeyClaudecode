@@ -8,7 +8,7 @@ use ratatui::widgets::{Block as WBlock, Borders, Paragraph};
 
 use super::text::{self, split_row, truncate_left, wrap};
 use super::theme::*;
-use crate::app::{App, Focus, PanelTab};
+use crate::app::{App, Focus, Hit, PanelTab};
 use crate::model::{Conversation, TodoStatus};
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App, conv: &Conversation) {
@@ -21,6 +21,18 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, conv: &Conversation) {
     }
     let w = inner.width as usize;
     let done = conv.todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+    let changes_label = format!("变更 {}", app.changes.len());
+    let todos_label = format!("待办 {done}/{}", conv.todos.len());
+
+    app.add_hit(area, Hit::Panel);
+    let cw = text::str_width(&changes_label) as u16;
+    let tw = text::str_width(&todos_label) as u16;
+    app.add_hit(Rect { x: inner.x + 1, width: cw.min(inner.width), height: 1, ..inner }, Hit::PanelTab(PanelTab::Changes));
+    let tx = inner.x + 1 + cw + 3;
+    if tx < inner.x + inner.width {
+        let r = Rect { x: tx, width: tw.min(inner.x + inner.width - tx), height: 1, ..inner };
+        app.add_hit(r, Hit::PanelTab(PanelTab::Todos));
+    }
 
     let tab = |label: String, active: bool| {
         if active {
@@ -33,9 +45,9 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, conv: &Conversation) {
     let mut lines = vec![
         Line::from(vec![
             Span::raw(" "),
-            tab(format!("变更 {}", app.changes.len()), app.panel_tab == PanelTab::Changes),
+            tab(changes_label, app.panel_tab == PanelTab::Changes),
             Span::raw("   "),
-            tab(format!("待办 {done}/{}", conv.todos.len()), app.panel_tab == PanelTab::Todos),
+            tab(todos_label, app.panel_tab == PanelTab::Todos),
         ]),
         Line::styled("─".repeat(w), fg(BORDER)),
     ];

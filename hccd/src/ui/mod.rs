@@ -32,6 +32,7 @@ const SIDEBAR_MIN_TERM_W: u16 = 90;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
+    app.hits.borrow_mut().clear();
     f.render_widget(WBlock::new().style(Style::new().bg(BG).fg(FG)), area);
     if area.width == 0 || area.height == 0 {
         return;

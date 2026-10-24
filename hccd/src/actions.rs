@@ -3,10 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::app::{App, Focus, InputState, Overlay, PanelTab, SidebarItem, SwitchEntry, SwitchTarget};
+use crate::app::{App, Focus, Hit, InputState, Overlay, PanelTab, SidebarItem, SwitchEntry, SwitchTarget};
 use crate::claude::process::{ClaudeProcess, SpawnOptions};
 use crate::claude::protocol;
 use crate::data::{git, sessions, store};
@@ -46,6 +46,7 @@ impl App {
             claude_args,
             next_conv: 1,
             should_quit: false,
+            hits: Default::default(),
         };
         app.refresh();
         app
@@ -190,12 +191,82 @@ impl App {
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key, tx),
             Event::Paste(text) => self.on_paste(&text),
-            Event::Mouse(m) => match m.kind {
-                crossterm::event::MouseEventKind::ScrollUp => self.scroll(3),
-                crossterm::event::MouseEventKind::ScrollDown => self.scroll(-3),
-                _ => {}
-            },
+            Event::Mouse(m) => self.on_mouse(m),
             _ => {}
+        }
+    }
+
+    // ───────────── 鼠标 ─────────────
+
+    fn on_mouse(&mut self, m: MouseEvent) {
+        let hit = self.hit_at(m.column, m.row);
+        match m.kind {
+            MouseEventKind::ScrollUp => self.on_wheel(hit, true),
+            MouseEventKind::ScrollDown => self.on_wheel(hit, false),
+            MouseEventKind::Down(MouseButton::Left) => self.on_click(hit),
+            _ => {}
+        }
+    }
+
+    /// 滚轮：弹窗里移动选中项，侧栏上移动选中行，其他地方滚动对话
+    fn on_wheel(&mut self, hit: Option<Hit>, up: bool) {
+        match &mut self.overlay {
+            Some(Overlay::Switcher { query, selected }) => {
+                let n = self.switch_index.len();
+                *selected = if up { selected.saturating_sub(1) } else { (*selected + 1).min(n) };
+                let (q, sel) = (query.clone(), *selected);
+                let max = self.switcher_matches(&q).len().saturating_sub(1);
+                if let Some(Overlay::Switcher { selected, .. }) = self.overlay.as_mut() {
+                    *selected = sel.min(max);
+                }
+            }
+            Some(_) => {}
+            None => match hit {
+                Some(Hit::Sidebar | Hit::SidebarItem(_)) => {
+                    let last = self.sidebar_items().len().saturating_sub(1);
+                    self.sidebar_selected =
+                        if up { self.sidebar_selected.saturating_sub(1) } else { (self.sidebar_selected + 1).min(last) };
+                }
+                _ => self.scroll(if up { 3 } else { -3 }),
+            },
+        }
+    }
+
+    fn on_click(&mut self, hit: Option<Hit>) {
+        if self.overlay.is_some() {
+            match hit {
+                Some(Hit::SwitcherItem(i)) => self.open_switcher_match(i),
+                Some(Hit::OverlayBox) => {}
+                // 点弹窗外面关闭
+                _ => self.overlay = None,
+            }
+            return;
+        }
+        match hit {
+            Some(Hit::SidebarItem(i)) => {
+                self.sidebar_selected = i;
+                self.focus = Focus::Sidebar;
+                if let Some(item) = self.sidebar_items().get(i).copied() {
+                    self.activate(item);
+                }
+            }
+            Some(Hit::Sidebar) => self.focus = Focus::Sidebar,
+            Some(Hit::Permission(i)) => {
+                self.permission_choice = i;
+                let decision = match i {
+                    0 => PermissionDecision::AllowOnce,
+                    1 => PermissionDecision::AllowAlways,
+                    _ => PermissionDecision::Deny,
+                };
+                self.answer_permission(decision);
+            }
+            Some(Hit::Chat | Hit::Input) => self.focus = Focus::Input,
+            Some(Hit::PanelTab(tab)) => {
+                self.panel_tab = tab;
+                self.focus = Focus::Panel;
+            }
+            Some(Hit::Panel) => self.focus = Focus::Panel,
+            Some(Hit::OverlayBox | Hit::SwitcherItem(_)) | None => {}
         }
     }
 
@@ -735,15 +806,8 @@ impl App {
                     *selected = 0;
                 }
                 KeyCode::Enter => {
-                    let (q, sel) = (query.clone(), *selected);
-                    let target = {
-                        let hits = self.switcher_matches(&q);
-                        hits.get(sel.min(hits.len().saturating_sub(1))).map(|e| e.target.clone())
-                    };
-                    self.overlay = None;
-                    if let Some(t) = target {
-                        self.jump(t);
-                    }
+                    let sel = *selected;
+                    self.open_switcher_match(sel);
                 }
                 _ => {}
             },
@@ -755,6 +819,19 @@ impl App {
             if let Some(Overlay::Switcher { selected, .. }) = self.overlay.as_mut() {
                 *selected = clamped;
             }
+        }
+    }
+
+    /// 关掉 Ctrl+K 并打开第 i 条结果
+    fn open_switcher_match(&mut self, i: usize) {
+        let Some(Overlay::Switcher { query, .. }) = &self.overlay else { return };
+        let target = {
+            let hits = self.switcher_matches(query);
+            hits.get(i.min(hits.len().saturating_sub(1))).map(|e| e.target.clone())
+        };
+        self.overlay = None;
+        if let Some(t) = target {
+            self.jump(t);
         }
     }
 

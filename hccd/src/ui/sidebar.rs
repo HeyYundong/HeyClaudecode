@@ -10,7 +10,7 @@ use ratatui::widgets::{Block as WBlock, Borders, Paragraph};
 
 use super::text::{pad, split_row};
 use super::theme::*;
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, Hit};
 use crate::model::{SessionInfo, SessionStatus};
 
 struct Row {
@@ -29,6 +29,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     let block = WBlock::new().borders(Borders::RIGHT).border_style(fg(if focused { ACCENT } else { BORDER }));
     let inner = block.inner(area);
     f.render_widget(block, area);
+    app.add_hit(area, Hit::Sidebar);
     if inner.height == 0 || inner.width < 4 {
         return;
     }
@@ -47,7 +48,11 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         .into_iter()
         .skip(offset)
         .take(h)
-        .map(|r| {
+        .enumerate()
+        .map(|(k, r)| {
+            if let Some(item) = r.item {
+                app.add_hit(Rect { y: inner.y + k as u16, height: 1, ..inner }, Hit::SidebarItem(item));
+            }
             if r.item == Some(app.sidebar_selected) {
                 highlight(r.line, w, focused)
             } else {
