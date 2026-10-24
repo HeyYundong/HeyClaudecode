@@ -3,6 +3,7 @@ import {execFile} from 'node:child_process';
 import {Box, Text, useApp, useInput, useStdout} from 'ink';
 import {addProject, dirExists, removeProject, saveProjects} from './store.js';
 import {fetchSessions, reactivated, statsFor, suggestPaths} from './sessions.js';
+import {repliedAfterConfirm} from './transcripts.js';
 import {completePath} from './complete.js';
 import {loadReviews, saveReviews, withoutConfirmed} from './reviews.js';
 import {NewTask, SessionsScreen, sessionHelp, sessionKeys} from './sessionsScreen.js';
@@ -289,9 +290,14 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 			setMessage({text: `读取会话失败：${result.error}`, color: 'red'});
 			return;
 		}
-		// 已完成的任务又被唤醒了：取消确认，等它再结束时重新进入待确认
-		const revived = reactivated(result.sessions, confirmedRef.current);
-		if (revived.length) saveConfirmed(withoutConfirmed(confirmedRef.current, revived));
+		// 完成的任务又有了新进展，取消确认，让它重新走一遍待确认：
+		// 一是此刻又在进行中或需要输入；二是确认之后又有过新对话（即使已经答完了，
+		// 比如你在打开的会话里回复、Claude 在你回到 HeyClaude 之前就答完）
+		const revived = new Set([
+			...reactivated(result.sessions, confirmedRef.current),
+			...repliedAfterConfirm(confirmedRef.current),
+		]);
+		if (revived.size) saveConfirmed(withoutConfirmed(confirmedRef.current, [...revived]));
 		setSessions(result.sessions);
 	}, [saveConfirmed]);
 
