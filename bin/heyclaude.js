@@ -66,18 +66,29 @@ async function showApp(state) {
 	}
 }
 
+// HeyClaude 自己不响应 Ctrl+Z 的暂停信号：界面里 Ctrl+Z 是“返回上一级”，
+// 交接终端的空档里多按的 Ctrl+Z 也不能把我们挂起
+process.on('SIGTSTP', () => {});
+
 function attach(project, session) {
-	// 子进程和我们在同一个进程组，Ctrl+C / Ctrl+Z 只应该交给 claude 处理
+	// 子进程和我们在同一个进程组，Ctrl+C 只应该交给 claude 处理
 	const ignore = () => {};
 	process.on('SIGINT', ignore);
-	process.on('SIGTSTP', ignore);
+	// 先把终端设成原始模式：claude 接管终端之前按的 Ctrl+Z / Ctrl+C 只是普通按键，
+	// 不会变成信号把 claude 暂停（暂停的 claude 和等它退出的我们会互相卡住）
+	process.stdin.setRawMode(true);
 	// claude attach 用短 ID 打开后台会话；在会话自己的目录里运行（可能是 worktree）
 	const cwd = dirExists(session.cwd) ? session.cwd : project.path;
 	const result = spawnSync('claude', ['attach', session.id], {cwd, stdio: 'inherit'});
+	process.stdin.setRawMode(false);
+	if (result.status && !result.error) {
+		// 会话打不开时 claude 会打印原因然后退出，停一下让人看清
+		process.stdout.write(`\n\x1b[33m会话 ${session.name || session.id} 打不开（退出码 ${result.status}），按回车返回 HeyClaude\x1b[0m`);
+		spawnSync('sh', ['-c', 'read _'], {stdio: 'inherit'});
+	}
 	process.off('SIGINT', ignore);
-	process.off('SIGTSTP', ignore);
 	if (result.error) return {text: `无法启动 claude：${result.error.message}`, color: 'red'};
-	if (result.status) return {text: `claude attach 退出码 ${result.status}`, color: 'yellow'};
+	if (result.status) return {text: `会话 ${session.name || session.id} 打不开（claude attach 退出码 ${result.status}）`, color: 'yellow'};
 	return null;
 }
 

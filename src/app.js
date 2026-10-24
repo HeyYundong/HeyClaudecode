@@ -13,6 +13,10 @@ const REFRESH_MS = 10_000;
 const DIGIT_WAIT_MS = 600;
 
 const isBack = (input, key) => key.ctrl && input === 'z';
+// 连按 Ctrl+Z 时，每隔这么久才退一级，免得一路退出 HeyClaude
+const BACK_GAP_MS = 400;
+// 从会话回来后，这段时间内的 Ctrl+Z 是离开会话时多按的，忽略
+const RETURN_QUIET_MS = 600;
 
 function useTerminalSize() {
 	const {stdout} = useStdout();
@@ -263,6 +267,15 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 	const [loading, setLoading] = useState(false);
 	const [message, setMessage] = useState(initialMessage ?? null);
 
+	// 返回上一级（Ctrl+Z / Esc）都经过这里：间隔太短的重复按键忽略
+	const backAtRef = useRef(initialScreen === 'sessions' ? Date.now() + RETURN_QUIET_MS - BACK_GAP_MS : 0);
+	const goBack = fn => {
+		const now = Date.now();
+		if (now - backAtRef.current < BACK_GAP_MS) return;
+		backAtRef.current = now;
+		fn();
+	};
+
 	// 你确认过的会话。用 ref 保存最新值，异步刷新时也能读到
 	const [confirmed, setConfirmedState] = useState(() => {
 		try {
@@ -368,7 +381,8 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 			setMessage(null);
 			if (/^[0-9]$/.test(input)) return typeDigit(input);
 			clearDigits();
-			if (input === 'q' || key.escape || isBack(input, key)) return exit({type: 'quit'});
+			if (input === 'q') return exit({type: 'quit'});
+			if (key.escape || isBack(input, key)) return goBack(() => exit({type: 'quit'}));
 			if (key.upArrow || input === 'k') return setCursor(c => Math.max(0, c - 1));
 			if (key.downArrow || input === 'j') return setCursor(c => Math.min(projects.length - 1, c + 1));
 			if (input === 'a') return setScreen('add');
@@ -419,7 +433,7 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 				rows,
 				onOpenSession: (session, tab) => exit({type: 'attach', project: current, session, tab}),
 				onNewTask: () => setScreen('newtask'),
-				onBack: () => setScreen('list'),
+				onBack: () => goBack(() => setScreen('list')),
 				onRefresh: refresh,
 			}),
 			h(Footer, {message, keys: sessionKeys(layout)}),
@@ -429,7 +443,7 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 	if (screen === 'newtask' && current) {
 		return frame(
 			h(Header, {title: current.name, subtitle: current.path}),
-			h(NewTask, {project: current, onSubmit: submitTask, onCancel: () => setScreen('sessions')}),
+			h(NewTask, {project: current, onSubmit: submitTask, onCancel: () => goBack(() => setScreen('sessions'))}),
 			h(Footer, {keys: [['Enter', '启动'], ['Ctrl+U', '清空'], ['Ctrl+Z', '取消']]}),
 		);
 	}
@@ -440,7 +454,7 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 			h(AddProject, {
 				projects,
 				sessions,
-				onCancel: () => setScreen('list'),
+				onCancel: () => goBack(() => setScreen('list')),
 				onDone: ({projects: next, project}) => {
 					if (persist(next)) {
 						setCursor(next.findIndex(p => p.path === project.path));
