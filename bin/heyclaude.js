@@ -7,25 +7,35 @@ import {App} from '../src/app.js';
 import {configDir, dirExists, loadProjects} from '../src/store.js';
 
 const {version} = createRequire(import.meta.url)('../package.json');
-const forwardedArgs = process.argv.slice(2);
+const argv = process.argv.slice(2);
+// --tabs：方案 D（项目和状态标签）；默认方案 A（项目列表 → 按状态分组的会话列表）
+const layout = argv.includes('--tabs') ? 'tabs' : 'grouped';
+// 其余参数在按 n 新建任务时传给 claude --bg
+const forwardedArgs = argv.filter(a => a !== '--tabs');
 
-if (forwardedArgs.includes('-h') || forwardedArgs.includes('--help')) {
-	console.log(`HeyClaude ${version} — 按项目管理 Claude Code agents
+if (argv.includes('-h') || argv.includes('--help')) {
+	console.log(`HeyClaude ${version} — 按项目管理 Claude Code 后台任务
 
-用法: heyclaude (或 hcc) [claude agents 的参数…]
+用法: heyclaude (或 hcc) [--tabs] [claude 的参数…]
 
-  启动项目列表 TUI。进入项目看到按状态分组的后台任务，选中任务按 Enter
-  用 \`claude attach\` 直接打开那个会话，按 Ctrl+Z 回到 HeyClaude。
-  除 -h/--help、-v/--version 外的参数会原样传给 claude agents（审阅页
-  按 A 打开），例如:
+  默认：项目列表 → 项目里按状态分组的任务列表。
+  --tabs：一个界面里用标签切换项目和状态。
 
-    heyclaude --model opus --effort high
+  任务有四种状态：运行中、等你回复、待确认、已完成。Claude 说做完了的任务
+  先进「待确认」，你按 c 确认后才算「已完成」。
 
-项目列表保存在 ${configDir()}/projects.json`);
+  选中任务按 Enter 用 \`claude attach\` 打开会话，按 Ctrl+Z 回到 HeyClaude。
+  Ctrl+Z 在 HeyClaude 里也是“返回上一级”，在项目列表里按就退出。
+
+  除 --tabs、-h、-v 外的参数会在按 n 新建任务时传给 \`claude --bg\`，例如:
+
+    hcc --model opus --effort high
+
+项目列表保存在 ${configDir()}/projects.json，确认记录保存在 reviews.json`);
 	process.exit(0);
 }
 
-if (forwardedArgs.includes('-v') || forwardedArgs.includes('--version')) {
+if (argv.includes('-v') || argv.includes('--version')) {
 	console.log(version);
 	process.exit(0);
 }
@@ -43,14 +53,12 @@ try {
 	process.exit(1);
 }
 
-async function showList(initialPath, initialMessage, initialScreen, initialSessionId) {
+async function showApp(state) {
 	// 自己切换备用屏幕：Ink 的 alternateScreen 不把光标移到左上角，
 	// Windows Terminal 等会沿用原来的光标行，界面就画到了屏幕底部
 	process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H');
 	try {
-		const instance = render(
-			React.createElement(App, {initialProjects: projects, initialPath, initialMessage, initialScreen, initialSessionId, forwardedArgs}),
-		);
+		const instance = render(React.createElement(App, {layout, initialProjects: projects, forwardedArgs, ...state}));
 		const result = await instance.waitUntilExit();
 		return result ?? {type: 'quit'};
 	} finally {
@@ -58,49 +66,38 @@ async function showList(initialPath, initialMessage, initialScreen, initialSessi
 	}
 }
 
-function runClaude(args, cwd) {
+function attach(project, session) {
 	// 子进程和我们在同一个进程组，Ctrl+C / Ctrl+Z 只应该交给 claude 处理
 	const ignore = () => {};
 	process.on('SIGINT', ignore);
 	process.on('SIGTSTP', ignore);
-	const result = spawnSync('claude', args, {cwd, stdio: 'inherit'});
+	// claude attach 用短 ID 打开后台会话；在会话自己的目录里运行（可能是 worktree）
+	const cwd = dirExists(session.cwd) ? session.cwd : project.path;
+	const result = spawnSync('claude', ['attach', session.id], {cwd, stdio: 'inherit'});
 	process.off('SIGINT', ignore);
 	process.off('SIGTSTP', ignore);
-	if (result.error) {
-		return {text: `无法启动 claude：${result.error.message}`, color: 'red'};
-	}
-	if (result.status) {
-		return {text: `claude ${args[0]} 退出码 ${result.status}`, color: 'yellow'};
-	}
+	if (result.error) return {text: `无法启动 claude：${result.error.message}`, color: 'red'};
+	if (result.status) return {text: `claude attach 退出码 ${result.status}`, color: 'yellow'};
 	return null;
 }
 
-function runAction(action) {
-	const {project, session} = action;
-	if (action.type === 'attach') {
-		// claude attach 用短 ID 打开后台会话；在会话自己的目录里运行（可能是 worktree）
-		return runClaude(['attach', session.id], dirExists(session.cwd) ? session.cwd : project.path);
-	}
-	// cwd 也设成项目目录，这样在 agents 视图里新派发的会话会落在这个项目下
-	return runClaude(['agents', '--cwd', project.path, ...forwardedArgs], project.path);
-}
-
-let lastPath;
-let message;
-let returnTo;
-let lastSessionId;
+let state = {};
 for (;;) {
-	const action = await showList(lastPath, message, returnTo, lastSessionId);
-	if (action.type !== 'attach' && action.type !== 'agents') break;
-	// 打开会话或 agents 列表之后，都回到这个项目的审阅页，光标停在刚才的会话上
-	lastPath = action.project.path;
-	returnTo = 'review';
-	lastSessionId = action.session?.sessionId;
-	message = runAction(action);
+	const action = await showApp(state);
+	if (action.type !== 'attach') break;
+	const message = attach(action.project, action.session);
+	// 回到这个项目的任务列表，光标和状态标签停在刚才的位置
+	state = {
+		initialPath: action.project.path,
+		initialScreen: 'sessions',
+		initialSessionId: action.session.sessionId,
+		initialTab: action.tab,
+		initialMessage: message,
+	};
 	// 重新读取，以防在别处改过 projects.json
 	try {
 		projects = loadProjects();
 	} catch (error) {
-		message = {text: error.message, color: 'red'};
+		state.initialMessage = {text: error.message, color: 'red'};
 	}
 }
