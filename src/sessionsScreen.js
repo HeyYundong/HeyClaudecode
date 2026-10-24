@@ -2,31 +2,12 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Box, Text, useInput} from 'ink';
 import {classify, sessionsFor} from './sessions.js';
 import {withConfirmed, withoutConfirmed} from './reviews.js';
+import {STATUS, STATUS_ORDER, StatusCounts, textWidth} from './ui.js';
 
 const h = React.createElement;
 
-// 四种状态。「待确认」是 HeyClaude 加的：Claude 说完成了，你还没确认
-export const STATUS = {
-	blocked: {icon: '●', label: '等你回复', color: 'magenta'},
-	pending: {icon: '◆', label: '待确认', color: 'cyan'},
-	working: {icon: '◌', label: '运行中', color: 'yellow'},
-	confirmed: {icon: '✓', label: '已完成', color: undefined},
-};
-export const GROUP_ORDER = ['blocked', 'pending', 'working', 'confirmed'];
-
-// 已结束的任务具体是怎么结束的
-const ENDED = {
-	done: {label: '完成', color: 'green'},
-	failed: {label: '失败', color: 'red'},
-	stopped: {label: '已停止', color: 'yellow'},
-};
-
-function detail(session, group) {
-	if (group === 'blocked') return {label: '需要输入', color: 'magenta'};
-	if (group === 'working') return {label: '运行中', color: 'yellow'};
-	// Claude Code 以后新增的结束状态：原样显示
-	return ENDED[session.state] ?? {label: session.state || '已结束', color: undefined};
-}
+// 完成的任务默认只列最近几个，按 h 展开
+const RECENT_DONE = 3;
 
 const pad = n => String(n).padStart(2, '0');
 // “昨天 18:20 开始”要空格，“12 分钟前开始”不要
@@ -60,80 +41,121 @@ export function whereIn(session, projectPath) {
 	return cwd.startsWith(projectPath + '/') ? cwd.slice(projectPath.length + 1) : cwd;
 }
 
-// 按状态分组；已完成的按确认时间倒序，其余按开始时间倒序
+// 失败的任务具体是哪种
+const failTag = session => (session.state === 'stopped' ? '已停止' : '出错');
+
+// 按状态分组；完成的按确认时间倒序，其余按开始时间倒序
 export function groupSessions(sessions, projectPath, confirmed) {
-	const groups = {blocked: [], pending: [], working: [], confirmed: []};
+	const groups = Object.fromEntries(STATUS_ORDER.map(k => [k, []]));
 	for (const s of sessionsFor(sessions ?? [], projectPath)) {
 		const g = classify(s, confirmed);
 		if (groups[g]) groups[g].push(s);
 	}
 	const newest = (a, b) => (b.startedAt || 0) - (a.startedAt || 0);
-	for (const key of ['blocked', 'pending', 'working']) groups[key].sort(newest);
+	for (const key of STATUS_ORDER) if (key !== 'confirmed') groups[key].sort(newest);
 	groups.confirmed.sort((a, b) => String(confirmed[b.sessionId]).localeCompare(String(confirmed[a.sessionId])));
 	return groups;
 }
 
-const TABS = [{key: 'all', label: '全部'}, ...GROUP_ORDER.map(key => ({key, label: STATUS[key].label}))];
+const countsOf = groups => Object.fromEntries(STATUS_ORDER.map(k => [k, groups[k].length]));
+const nameOf = session => (session.name || session.id || session.sessionId) + (session.kind !== 'background' ? '（交互）' : '');
 
-function Row({session, group, selected, showLabel, extra, columns}) {
-	const status = STATUS[group];
+// 默认布局的一行：图标、名字、失败原因、开始时间
+function Row({session, group, selected, columns}) {
+	const s = STATUS[group];
 	const dim = group === 'confirmed';
-	const d = detail(session, group);
-	const labelWidth = showLabel ? 10 : 0;
-	const detailWidth = 10;
-	const timeWidth = 18;
-	const extraWidth = 22;
-	const nameWidth = Math.max(12, columns - 5 - labelWidth - detailWidth - timeWidth - extraWidth - 2);
-	const interactive = session.kind !== 'background';
+	const tagWidth = 8;
+	const timeWidth = 12;
+	const nameWidth = Math.max(12, columns - 5 - tagWidth - timeWidth - 2);
 	return h(
 		Box,
 		null,
 		h(Box, {width: 2, flexShrink: 0}, h(Text, {color: 'red'}, selected ? '❯' : ' ')),
-		h(Box, {width: 3, flexShrink: 0}, h(Text, {color: status.color, dimColor: dim}, status.icon)),
-		showLabel
-			? h(Box, {width: labelWidth, flexShrink: 0}, h(Text, {color: status.color, dimColor: dim}, status.label))
-			: null,
+		h(Box, {width: 3, flexShrink: 0}, h(Text, {color: s.color, dimColor: s.dim}, s.icon)),
+		h(Box, {width: nameWidth}, h(Text, {bold: selected, dimColor: dim && !selected, wrap: 'truncate-end'}, nameOf(session))),
+		h(Box, {width: tagWidth, flexShrink: 0}, h(Text, {dimColor: true}, group === 'failed' ? failTag(session) : '')),
 		h(
 			Box,
-			{width: nameWidth},
-			h(
-				Text,
-				{bold: selected, dimColor: dim && !selected, wrap: 'truncate-end'},
-				(session.name || session.id || session.sessionId) + (interactive ? '（交互）' : ''),
-			),
+			{width: timeWidth, flexShrink: 0, justifyContent: 'flex-end'},
+			h(Text, {dimColor: true, wrap: 'truncate-end'}, relativeTime(session.startedAt)),
 		),
-		h(Box, {width: detailWidth, flexShrink: 0}, h(Text, {color: dim ? undefined : d.color, dimColor: dim}, d.label)),
-		h(
-			Box,
-			{width: timeWidth, flexShrink: 0},
-			h(Text, {dimColor: true, wrap: 'truncate-end'}, withSuffix(relativeTime(session.startedAt), '开始')),
-		),
-		h(Box, {width: extraWidth, flexShrink: 0}, h(Text, {dimColor: true, wrap: 'truncate-end'}, extra)),
 	);
 }
 
-function Chip({label, selected, color, dim}) {
+// --tabs 布局的一项：名字一行，灰色的详情一行
+function TwoLineRow({session, group, selected, projectPath, confirmedAt}) {
+	const s = STATUS[group];
+	const dim = group === 'confirmed';
+	const meta = [
+		group === 'failed' ? failTag(session) : null,
+		group === 'confirmed' && confirmedAt
+			? withSuffix(relativeTime(Date.parse(confirmedAt)), '确认')
+			: withSuffix(relativeTime(session.startedAt), '开始'),
+		whereIn(session, projectPath),
+	].filter(Boolean);
 	return h(
-		Text,
-		{inverse: selected, bold: selected, color: selected ? undefined : color, dimColor: dim && !selected},
-		` ${label} `,
+		Box,
+		{flexDirection: 'column', marginBottom: 1},
+		h(
+			Box,
+			null,
+			h(Box, {width: 2, flexShrink: 0}, h(Text, {color: 'red'}, selected ? '❯' : ' ')),
+			h(Box, {width: 3, flexShrink: 0}, h(Text, {color: s.color, dimColor: s.dim}, s.icon)),
+			h(Text, {bold: !dim || selected, dimColor: dim && !selected, wrap: 'truncate-end'}, nameOf(session)),
+		),
+		h(Box, {paddingLeft: 5}, h(Text, {dimColor: true, wrap: 'truncate-end'}, meta.join(' · '))),
+	);
+}
+
+// 分组标题：“待确认 3 ──────────”
+function GroupHeader({group, count, columns}) {
+	const s = STATUS[group];
+	const title = s.label;
+	const rule = '─'.repeat(Math.max(4, columns - textWidth(title) - textWidth(count) - 4));
+	return h(
+		Box,
+		null,
+		h(Text, {bold: true, color: s.color, dimColor: s.dim}, title),
+		h(Text, {dimColor: true}, ` ${count} `),
+		h(Text, {dimColor: true}, rule),
 	);
 }
 
 export function sessionKeys(layout) {
 	return [
-		['Enter', '打开会话'],
+		['Enter', '打开'],
 		['c', '确认'],
-		['C', '全部确认'],
-		['u', '撤销'],
 		['n', '新任务'],
-		...(layout === 'tabs' ? [['←→', '项目'], ['Tab', '状态']] : []),
 		['Ctrl+Z', layout === 'tabs' ? '项目列表' : '返回'],
+		['?', '全部按键'],
 	];
 }
 
-// 项目里的会话列表。layout = grouped（方案 A，按状态分组）或 tabs（方案 D，项目和状态标签）
+export function sessionHelp(layout) {
+	return [
+		{
+			title: '任务',
+			keys: [
+				['↑ ↓ / k j', '选择任务'],
+				['Enter / o', '打开会话（claude attach），在会话里按 Ctrl+Z 回来'],
+				['c', '确认待确认的任务，它变成完成；在完成的任务上按则取消确认'],
+				['C', '确认这个项目下全部待确认任务'],
+				['u', '撤销最近一次确认'],
+				['n', '新任务：在项目目录里用 claude --bg 启动'],
+				...(layout === 'tabs' ? [] : [['h', '展开或收起全部完成的任务']]),
+				['r', '刷新'],
+			],
+		},
+		...(layout === 'tabs'
+			? [{title: '切换', keys: [['← →', '切换项目'], ['Tab / Shift+Tab', '切换状态']]}]
+			: []),
+		{title: '返回', keys: [['Ctrl+Z / Esc', layout === 'tabs' ? '回到项目列表' : '回到项目列表（连按时每 0.4 秒只退一级）']]},
+	];
+}
+
+// 项目里的会话列表。layout = grouped（默认，按状态分组）或 tabs（项目和状态标签）
 export function SessionsScreen({
+	active = true,
 	layout,
 	projects,
 	projectIndex,
@@ -143,9 +165,10 @@ export function SessionsScreen({
 	confirmed,
 	saveConfirmed,
 	initialSessionId,
-	initialTab,
+	initialView,
 	onOpenSession,
 	onNewTask,
+	onHelp,
 	onBack,
 	onRefresh,
 	setMessage,
@@ -154,7 +177,10 @@ export function SessionsScreen({
 }) {
 	const project = projects[projectIndex];
 	const tabs = layout === 'tabs';
-	const [tab, setTab] = useState(() => (TABS.some(t => t.key === initialTab) ? initialTab : 'all'));
+	// tabs 布局当前的状态标签；null 表示还没手动选过，用默认的
+	// 从会话回来时 initialView 带着离开前的标签和展开状态
+	const [tabChoice, setTabChoice] = useState(() => (STATUS_ORDER.includes(initialView?.tab) ? initialView.tab : null));
+	const [showAllDone, setShowAllDone] = useState(() => Boolean(initialView?.showAllDone));
 	const [asking, setAsking] = useState(false);
 	const [cursor, setCursorState] = useState(0);
 	const cursorRef = useRef(0);
@@ -166,8 +192,14 @@ export function SessionsScreen({
 	const undoRef = useRef([]);
 
 	const groups = useMemo(() => groupSessions(sessions, project.path, confirmed), [sessions, project.path, confirmed]);
-	const visibleGroups = tabs && tab !== 'all' ? [tab] : GROUP_ORDER;
-	const items = visibleGroups.flatMap(g => groups[g].map(session => ({session, group: g})));
+	const counts = countsOf(groups);
+	// 默认标签：先看需要你处理的
+	const tab = tabChoice ?? ['blocked', 'pending', 'failed', 'working', 'confirmed'].find(k => counts[k]) ?? 'working';
+
+	// 可以选中的任务，按显示顺序
+	const shownIn = g => (!tabs && g === 'confirmed' && !showAllDone ? groups[g].slice(0, RECENT_DONE) : groups[g]);
+	const visibleGroups = tabs ? [tab] : STATUS_ORDER;
+	const items = visibleGroups.flatMap(g => shownIn(g).map(session => ({session, group: g})));
 	const clamp = i => Math.max(0, Math.min(i, items.length - 1));
 
 	// 从会话返回时，数据到了以后把光标放回刚才打开的任务上
@@ -186,8 +218,8 @@ export function SessionsScreen({
 	};
 
 	const switchTab = step => {
-		const i = TABS.findIndex(t => t.key === tab);
-		setTab(TABS[(i + step + TABS.length) % TABS.length].key);
+		const i = STATUS_ORDER.indexOf(tab);
+		setTabChoice(STATUS_ORDER[(i + step + STATUS_ORDER.length) % STATUS_ORDER.length]);
 		setCursor(0);
 	};
 
@@ -195,6 +227,7 @@ export function SessionsScreen({
 		(input, key) => {
 			setMessage(null);
 			if ((key.ctrl && input === 'z') || key.escape) return onBack();
+			if (input === '?') return onHelp();
 			if (key.upArrow || input === 'k') return setCursor(c => clamp(c - 1));
 			if (key.downArrow || input === 'j') return setCursor(c => clamp(c + 1));
 			if (tabs && (key.leftArrow || key.rightArrow)) {
@@ -202,6 +235,7 @@ export function SessionsScreen({
 				return onSwitchProject(key.leftArrow ? -1 : 1);
 			}
 			if (tabs && key.tab) return switchTab(key.shift ? -1 : 1);
+			if (!tabs && input === 'h') return setShowAllDone(v => !v);
 			if (input === 'r') return onRefresh();
 			if (input === 'n') return onNewTask();
 			if (input === 'u') {
@@ -224,7 +258,7 @@ export function SessionsScreen({
 				if (session.kind !== 'background') {
 					return setMessage({text: '这是交互会话，请在它自己的终端里操作', color: 'yellow'});
 				}
-				return onOpenSession(session, tab);
+				return onOpenSession(session, {tab, showAllDone});
 			}
 			if (input === 'c') {
 				if (group === 'pending') return confirm([session.sessionId], `已确认 ${name}`);
@@ -234,13 +268,15 @@ export function SessionsScreen({
 					}
 					return;
 				}
-				return setMessage({
-					text: group === 'blocked' ? '这个任务在等你回复，按 Enter 打开它' : '任务还在运行，结束后才能确认',
-					color: 'yellow',
-				});
+				const why = {
+					working: '任务还在进行，结束后才能确认',
+					blocked: '这个任务在等你输入，按 Enter 打开它',
+					failed: '失败的任务不需要确认',
+				};
+				return setMessage({text: why[group], color: 'yellow'});
 			}
 		},
-		{isActive: !asking},
+		{isActive: active && !asking},
 	);
 
 	useInput(
@@ -251,103 +287,108 @@ export function SessionsScreen({
 			}
 			setAsking(false);
 		},
-		{isActive: asking},
+		{isActive: active && asking},
 	);
 
+	const askLine = asking
+		? h(Box, {marginTop: 1}, h(Text, {color: 'yellow'}, `确认 ${project.name} 下全部 ${groups.pending.length} 个待确认任务？(y/N)`))
+		: null;
+
 	if (!sessions) {
-		return h(Box, {paddingX: 1}, h(Text, {dimColor: true}, loading ? '读取会话中…' : '没有会话数据，按 r 重试'));
+		return h(Text, {dimColor: true}, loading ? '读取会话中…' : '没有会话数据，按 r 重试');
 	}
 
-	// 列表行：方案 A 带分组标题，方案 D 只有任务行
+	if (tabs) {
+		// 第一行：项目；第二行：状态标签；下面是这个状态的任务，每个两行
+		const projectLine = h(
+			Box,
+			{flexWrap: 'wrap'},
+			h(Text, {bold: true, color: 'red'}, 'HeyClaude'),
+			...projects.map((p, i) =>
+				h(
+					Box,
+					{key: p.path, marginLeft: 3},
+					h(Text, {bold: i === projectIndex, underline: i === projectIndex, dimColor: i !== projectIndex}, p.name),
+				),
+			),
+			h(Box, {marginLeft: 3}, h(Text, {dimColor: true}, '← →')),
+		);
+		const tabLine = h(
+			Box,
+			{flexWrap: 'wrap', marginTop: 1},
+			...STATUS_ORDER.map((k, i) => {
+				const s = STATUS[k];
+				const selected = k === tab;
+				return h(
+					Box,
+					{key: k, marginLeft: i ? 3 : 0},
+					h(
+						Text,
+						{color: s.color, dimColor: (s.dim || !counts[k]) && !selected, bold: selected, underline: selected},
+						`${counts[k]} ${s.label}`,
+					),
+				);
+			}),
+			h(Box, {marginLeft: 3}, h(Text, {dimColor: true}, 'Tab')),
+		);
+		const perItem = 3;
+		const visible = Math.max(1, Math.floor((rows - 10) / perItem));
+		const c = clamp(cursor);
+		const start = Math.min(Math.max(0, c - visible + 1), Math.max(0, items.length - visible));
+		return h(
+			Box,
+			{flexDirection: 'column'},
+			projectLine,
+			tabLine,
+			h(Text, {dimColor: true}, '─'.repeat(Math.max(10, columns - 5))),
+			h(Box, {marginTop: 1, flexDirection: 'column'},
+				items.length ? null : h(Text, {dimColor: true}, `没有${STATUS[tab].label}的任务`),
+				start > 0 ? h(Text, {dimColor: true}, `  ↑ 还有 ${start} 个`) : null,
+				...items.slice(start, start + visible).map((item, i) =>
+					h(TwoLineRow, {
+						key: item.session.sessionId,
+						session: item.session,
+						group: item.group,
+						selected: start + i === c,
+						projectPath: project.path,
+						confirmedAt: confirmed[item.session.sessionId],
+					}),
+				),
+				start + visible < items.length ? h(Text, {dimColor: true}, `  ↓ 还有 ${items.length - start - visible} 个`) : null,
+			),
+			askLine,
+		);
+	}
+
+	// 默认布局：按状态分组，组之间空一行，组标题带分隔线
 	const lines = [];
 	let index = 0;
-	for (const g of visibleGroups) {
+	for (const g of STATUS_ORDER) {
 		if (!groups[g].length) continue;
-		if (!tabs) lines.push({type: 'header', group: g});
-		for (const session of groups[g]) lines.push({type: 'item', session, group: g, index: index++});
+		if (lines.length) lines.push({type: 'gap', key: `gap-${g}`});
+		const collapsed = g === 'confirmed' && !showAllDone && groups[g].length > RECENT_DONE;
+		const count = collapsed ? `${groups[g].length} · 最近 ${RECENT_DONE} 个` : String(groups[g].length);
+		lines.push({type: 'header', key: `h-${g}`, group: g, count});
+		for (const session of shownIn(g)) lines.push({type: 'item', key: session.sessionId, session, group: g, index: index++});
+		if (collapsed) lines.push({type: 'more', key: 'more', text: `还有 ${groups[g].length - RECENT_DONE} 个，按 h 展开`});
 	}
-	const reserved = tabs ? 13 : 10;
-	const visible = Math.max(3, rows - reserved);
+	const visible = Math.max(4, rows - 9);
 	const cursorLine = Math.max(0, lines.findIndex(l => l.type === 'item' && l.index === clamp(cursor)));
 	const start = Math.min(Math.max(0, cursorLine - visible + 1), Math.max(0, lines.length - visible));
-	const slice = lines.slice(start, start + visible);
-
-	const extraFor = line => {
-		if (tabs) return whereIn(line.session, project.path);
-		const at = confirmed[line.session.sessionId];
-		return line.group === 'confirmed' && at ? withSuffix(relativeTime(Date.parse(at)), '确认') : '';
-	};
-
-	const empty = tabs && tab !== 'all' ? `没有${STATUS[tab].label}的任务` : '这个项目还没有后台任务，按 n 派发一个';
 
 	return h(
 		Box,
-		{flexDirection: 'column', paddingX: 1},
-		tabs
-			? h(
-					Box,
-					{flexDirection: 'column', marginBottom: 1},
-					h(
-						Box,
-						{flexWrap: 'wrap'},
-						h(Box, {width: 6}, h(Text, {dimColor: true}, '项目')),
-						...projects.map((p, i) =>
-							h(Box, {key: p.path, marginRight: 1}, h(Chip, {label: `${i + 1} ${p.name}`, selected: i === projectIndex})),
-						),
-					),
-					h(
-						Box,
-						{flexWrap: 'wrap'},
-						h(Box, {width: 6}, h(Text, {dimColor: true}, '状态')),
-						...TABS.map(t => {
-							const count = t.key === 'all' ? GROUP_ORDER.reduce((n, g) => n + groups[g].length, 0) : groups[t.key].length;
-							const s = STATUS[t.key];
-							return h(
-								Box,
-								{key: t.key, marginRight: 1},
-								h(Chip, {
-									label: `${s ? s.icon + ' ' : ''}${t.label} ${count}`,
-									selected: t.key === tab,
-									color: s?.color,
-									dim: t.key === 'confirmed' || (s && !count),
-								}),
-							);
-						}),
-					),
-			  )
-			: null,
-		lines.length ? null : h(Text, {dimColor: true}, empty),
+		{flexDirection: 'column'},
+		lines.length ? null : h(Text, {dimColor: true}, '这个项目还没有后台任务，按 n 启动一个'),
 		start > 0 ? h(Text, {dimColor: true}, `  ↑ 还有 ${start} 行`) : null,
-		...slice.map(line =>
-			line.type === 'header'
-				? h(
-						Box,
-						{key: `h-${line.group}`, marginTop: line === lines[0] ? 0 : 1},
-						h(
-							Text,
-							{bold: line.group !== 'confirmed', color: STATUS[line.group].color, dimColor: line.group === 'confirmed'},
-							`${STATUS[line.group].label} (${groups[line.group].length})`,
-						),
-				  )
-				: h(Row, {
-						key: line.session.sessionId,
-						session: line.session,
-						group: line.group,
-						selected: line.index === clamp(cursor),
-						showLabel: tabs && tab === 'all',
-						extra: extraFor(line),
-						columns: columns - 3,
-				  }),
-		),
+		...lines.slice(start, start + visible).map(line => {
+			if (line.type === 'gap') return h(Text, {key: line.key}, ' ');
+			if (line.type === 'header') return h(GroupHeader, {key: line.key, group: line.group, count: line.count, columns: columns - 4});
+			if (line.type === 'more') return h(Box, {key: line.key, paddingLeft: 5}, h(Text, {dimColor: true}, line.text));
+			return h(Row, {key: line.key, session: line.session, group: line.group, selected: line.index === clamp(cursor), columns: columns - 4});
+		}),
 		start + visible < lines.length ? h(Text, {dimColor: true}, `  ↓ 还有 ${lines.length - start - visible} 行`) : null,
-		items.length ? h(Box, {marginTop: 1}, h(Text, {dimColor: true}, '打开会话后按 Ctrl+Z 回到这里')) : null,
-		asking
-			? h(
-					Box,
-					{marginTop: 1},
-					h(Text, {color: 'yellow'}, `确认 ${project.name} 下全部 ${groups.pending.length} 个待确认任务？(y/N)`),
-			  )
-			: null,
+		askLine,
 	);
 }
 
@@ -373,8 +414,7 @@ export function NewTask({project, onSubmit, onCancel}) {
 	});
 	return h(
 		Box,
-		{flexDirection: 'column', paddingX: 1},
-		h(Text, {bold: true}, `新任务 · ${project.name}`),
+		{flexDirection: 'column'},
 		h(Text, {dimColor: true}, `在 ${project.path} 里用 claude --bg 启动一个后台任务`),
 		h(
 			Box,
@@ -385,3 +425,4 @@ export function NewTask({project, onSubmit, onCancel}) {
 		),
 	);
 }
+

@@ -102,7 +102,7 @@ for (;;) {
 		initialPath: action.project.path,
 		initialScreen: 'sessions',
 		initialSessionId: action.session.sessionId,
-		initialTab: action.tab,
+		initialView: action.view,
 		initialMessage: message,
 	};
 	// 重新读取，以防在别处改过 projects.json

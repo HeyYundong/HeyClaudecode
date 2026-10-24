@@ -5,7 +5,8 @@ import {addProject, dirExists, removeProject, saveProjects} from './store.js';
 import {fetchSessions, reactivated, statsFor, suggestPaths} from './sessions.js';
 import {completePath} from './complete.js';
 import {loadReviews, saveReviews, withoutConfirmed} from './reviews.js';
-import {NewTask, SessionsScreen, STATUS, sessionKeys} from './sessionsScreen.js';
+import {NewTask, SessionsScreen, sessionHelp, sessionKeys} from './sessionsScreen.js';
+import {HelpScreen, KeyHints, STATUS_ORDER, StatusCounts, TopBar} from './ui.js';
 
 const h = React.createElement;
 const REFRESH_MS = 10_000;
@@ -29,101 +30,92 @@ function useTerminalSize() {
 	return size;
 }
 
-function Header({title, subtitle}) {
-	return h(
-		Box,
-		{borderStyle: 'round', borderColor: 'red', paddingX: 1},
-		h(Text, {bold: true, color: 'red'}, title),
-		subtitle ? h(Text, {dimColor: true, wrap: 'truncate-end'}, `  ${subtitle}`) : null,
-	);
-}
-
-function Footer({keys, message}) {
-	return h(
-		Box,
-		{flexDirection: 'column', marginTop: 1},
-		message ? h(Text, {color: message.color}, message.text) : null,
-		h(Text, {dimColor: true}, keys.map(([key, label]) => `${key} ${label}`).join('  ·  ')),
-	);
-}
-
-// 所有项目合计：“4 个项目 · 2 等你回复 · 4 待确认 · 3 运行中”
-function totalsText(projects, sessions, confirmed) {
-	const parts = [`${projects.length} 个项目`];
-	if (!sessions) return parts[0];
-	const total = {blocked: 0, pending: 0, working: 0};
+// 所有项目的合计
+function totalCounts(projects, sessions, confirmed) {
+	const total = Object.fromEntries(STATUS_ORDER.map(k => [k, 0]));
+	if (!sessions) return total;
 	for (const p of projects) {
 		const s = statsFor(sessions, p.path, confirmed);
-		for (const k of Object.keys(total)) total[k] += s[k];
+		for (const k of STATUS_ORDER) total[k] += s[k];
 	}
-	for (const k of Object.keys(total)) if (total[k]) parts.push(`${total[k]} ${STATUS[k].label}`);
-	return parts.join(' · ');
+	return total;
 }
 
-const COUNT_COLUMNS = ['blocked', 'pending', 'working', 'confirmed'];
-const COUNT_WIDTH = 10;
+const LIST_HELP = [
+	{
+		title: '项目列表',
+		keys: [
+			['↑ ↓ / k j', '选择项目'],
+			['Enter', '进入项目'],
+			['1–9…', '按序号直接进入（超过 9 个可以连按多位）'],
+			['a', '添加项目'],
+			['d', '从列表移除项目（目录和会话不动）'],
+			['r', '刷新（每 10 秒也会自动刷新）'],
+			['Ctrl+Z / q', '退出'],
+		],
+	},
+];
 
+// 每个项目两行：名字和不为零的状态数量，下面是灰色的目录；项目之间空一行
 function ProjectList({projects, cursor, sessions, confirmed, loading, columns, rows}) {
 	if (projects.length === 0) {
 		return h(
 			Box,
-			{paddingX: 2, paddingY: 1, flexDirection: 'column'},
+			{flexDirection: 'column'},
 			h(Text, null, '还没有项目。'),
 			h(Text, {dimColor: true}, '按 a 添加项目目录。'),
 		);
 	}
 
 	const numberWidth = String(projects.length).length + 2;
-	const nameWidth = Math.min(28, Math.max(6, ...projects.map(p => p.name.length)) + 2);
-	const pathWidth = Math.max(10, columns - 4 - numberWidth - nameWidth - COUNT_WIDTH * COUNT_COLUMNS.length - 3);
+	const nameWidth = Math.min(28, Math.max(6, ...projects.map(p => p.name.length)) + 3);
 
-	// 列表过长时让光标保持在可见窗口内
-	const visible = Math.max(3, rows - 10);
+	// 列表过长时让光标保持在可见窗口内（每个项目占三行）
+	const visible = Math.max(1, Math.floor((rows - 7) / 3));
 	const start = Math.min(Math.max(0, cursor - visible + 1), Math.max(0, projects.length - visible));
 	const slice = projects.slice(start, start + visible);
 
-	const cell = (width, child) => h(Box, {width, flexShrink: 0}, child);
-
 	return h(
 		Box,
-		{flexDirection: 'column', paddingX: 1},
-		h(
-			Box,
-			null,
-			cell(2 + numberWidth, h(Text, null, '')),
-			cell(nameWidth, h(Text, {dimColor: true}, '项目')),
-			...COUNT_COLUMNS.map(k => cell(COUNT_WIDTH, h(Text, {dimColor: true}, STATUS[k].label))),
-			h(Box, {width: pathWidth}, h(Text, {dimColor: true}, '目录')),
-		),
+		{flexDirection: 'column'},
 		start > 0 ? h(Text, {dimColor: true}, `  ↑ 还有 ${start} 个`) : null,
 		...slice.map((project, i) => {
 			const index = start + i;
 			const selected = index === cursor;
 			const missing = !dirExists(project.path);
 			const stats = sessions ? statsFor(sessions, project.path, confirmed) : null;
+			const empty = stats && !STATUS_ORDER.some(k => stats[k]);
 			return h(
 				Box,
-				{key: project.path},
-				cell(2, h(Text, {color: 'red'}, selected ? '❯' : ' ')),
-				cell(
-					numberWidth,
-					h(Text, {color: selected ? 'red' : undefined, dimColor: !selected}, `${index + 1}.`.padStart(numberWidth - 1)),
+				{key: project.path, flexDirection: 'column', marginBottom: 1},
+				h(
+					Box,
+					null,
+					h(Box, {width: 2, flexShrink: 0}, h(Text, {color: 'red'}, selected ? '❯' : ' ')),
+					h(
+						Box,
+						{width: numberWidth, flexShrink: 0},
+						h(Text, {color: selected ? 'red' : undefined, dimColor: !selected}, `${index + 1}.`.padStart(numberWidth - 1)),
+					),
+					h(
+						Box,
+						{width: nameWidth, flexShrink: 0},
+						h(Text, {bold: true, color: selected ? 'red' : undefined, wrap: 'truncate-end'}, project.name),
+					),
+					stats
+						? empty
+							? h(Text, {dimColor: true}, '没有任务')
+							: h(StatusCounts, {counts: stats, sep: '   '})
+						: h(Text, {dimColor: true}, loading ? '…' : ''),
 				),
 				h(
 					Box,
-					{width: nameWidth},
-					h(Text, {bold: selected, color: selected ? 'red' : undefined, wrap: 'truncate-end'}, project.name),
-				),
-				...COUNT_COLUMNS.map(k => {
-					if (!stats) return cell(COUNT_WIDTH, h(Text, {dimColor: true}, loading ? '…' : ''));
-					const n = stats[k];
-					const highlight = n > 0 && k !== 'confirmed';
-					return cell(COUNT_WIDTH, h(Text, {color: highlight ? STATUS[k].color : undefined, bold: highlight, dimColor: !highlight}, String(n)));
-				}),
-				h(
-					Box,
-					{width: pathWidth},
-					h(Text, {dimColor: true, wrap: 'truncate-middle'}, missing ? `${project.path}（目录不存在）` : project.path),
+					{paddingLeft: 2 + numberWidth},
+					h(
+						Text,
+						{dimColor: !missing, color: missing ? 'yellow' : undefined, wrap: 'truncate-middle'},
+						missing ? `${project.path}（目录不存在）` : project.path,
+					),
 				),
 			);
 		}),
@@ -245,7 +237,7 @@ function dispatchTask(project, prompt, forwardedArgs) {
 }
 
 // layout: grouped（默认，方案 A）或 tabs（hcc --tabs，方案 D）
-export function App({layout, initialProjects, initialPath, initialMessage, initialScreen, initialSessionId, initialTab, forwardedArgs}) {
+export function App({layout, initialProjects, initialPath, initialMessage, initialScreen, initialSessionId, initialView, forwardedArgs}) {
 	const {exit} = useApp();
 	// 根节点比终端窄一列：有的终端（如 Windows Terminal）写满最后一列会被截断
 	const {columns, rows} = useTerminalSize();
@@ -266,6 +258,8 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 	const [sessions, setSessions] = useState(null);
 	const [loading, setLoading] = useState(false);
 	const [message, setMessage] = useState(initialMessage ?? null);
+	// ? 打开的按键说明（内容随所在界面变化），null 表示没打开
+	const [help, setHelp] = useState(null);
 
 	// 返回上一级（Ctrl+Z / Esc）都经过这里：间隔太短的重复按键忽略
 	const backAtRef = useRef(initialScreen === 'sessions' ? Date.now() + RETURN_QUIET_MS - BACK_GAP_MS : 0);
@@ -387,11 +381,12 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 			if (key.downArrow || input === 'j') return setCursor(c => Math.min(projects.length - 1, c + 1));
 			if (input === 'a') return setScreen('add');
 			if (input === 'r') return refresh();
+			if (input === '?') return setHelp(LIST_HELP);
 			if (!current) return;
 			if (input === 'd') return setScreen('delete');
 			if (key.return) return openSessions(cursorRef.current);
 		},
-		{isActive: screen === 'list'},
+		{isActive: screen === 'list' && !help},
 	);
 
 	useInput(
@@ -407,16 +402,25 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 		{isActive: screen === 'delete'},
 	);
 
-	const totals = totalsText(projects, sessions, confirmed);
-	const frame = (header, body, footer) =>
-		h(Box, {flexDirection: 'column', width: columns - 1}, header, body, footer);
+	// 四周留白：左右两格，上面一行
+	const frame = (...children) =>
+		h(Box, {flexDirection: 'column', width: columns - 1, paddingX: 2, paddingTop: 1}, ...children);
+	const brand = h(Text, {bold: true, color: 'red'}, 'HeyClaude');
+	const crumb = name => h(Text, null, h(Text, {dimColor: true}, 'HeyClaude › '), h(Text, {bold: true}, name));
+	const dimPath = path => h(Text, {dimColor: true, wrap: 'truncate-middle'}, path);
+
+	const helpScreen = help ? h(HelpScreen, {title: '全部按键', sections: help, onClose: () => setHelp(null)}) : null;
 
 	if (screen === 'sessions' && current) {
+		// 帮助页打开时任务列表只是藏起来，光标和状态标签都保留
 		return frame(
-			layout === 'tabs'
-				? h(Header, {title: 'HeyClaude', subtitle: totals})
-				: h(Header, {title: current.name, subtitle: current.path}),
-			h(SessionsScreen, {
+			helpScreen,
+			h(
+				Box,
+				{flexDirection: 'column', display: help ? 'none' : 'flex'},
+				layout === 'tabs' ? null : h(TopBar, {left: crumb(current.name), right: dimPath(current.path)}),
+				h(SessionsScreen, {
+				active: !help,
 				key: layout === 'tabs' ? 'tabs' : current.path,
 				layout,
 				projects,
@@ -427,30 +431,34 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 				confirmed,
 				saveConfirmed,
 				initialSessionId,
-				initialTab,
+				initialView,
 				setMessage,
 				columns,
 				rows,
-				onOpenSession: (session, tab) => exit({type: 'attach', project: current, session, tab}),
+				onOpenSession: (session, view) => exit({type: 'attach', project: current, session, view}),
 				onNewTask: () => setScreen('newtask'),
+				onHelp: () => setHelp(sessionHelp(layout)),
 				onBack: () => goBack(() => setScreen('list')),
 				onRefresh: refresh,
 			}),
-			h(Footer, {message, keys: sessionKeys(layout)}),
+				h(KeyHints, {message, keys: sessionKeys(layout)}),
+			),
 		);
 	}
 
+	if (help) return frame(helpScreen);
+
 	if (screen === 'newtask' && current) {
 		return frame(
-			h(Header, {title: current.name, subtitle: current.path}),
+			h(TopBar, {left: crumb(`${current.name} › 新任务`)}),
 			h(NewTask, {project: current, onSubmit: submitTask, onCancel: () => goBack(() => setScreen('sessions'))}),
-			h(Footer, {keys: [['Enter', '启动'], ['Ctrl+U', '清空'], ['Ctrl+Z', '取消']]}),
+			h(KeyHints, {keys: [['Enter', '启动'], ['Ctrl+U', '清空'], ['Ctrl+Z', '取消']]}),
 		);
 	}
 
 	if (screen === 'add') {
 		return frame(
-			h(Header, {title: 'HeyClaude', subtitle: '添加项目'}),
+			h(TopBar, {left: crumb('添加项目')}),
 			h(AddProject, {
 				projects,
 				sessions,
@@ -463,33 +471,35 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 					setScreen('list');
 				},
 			}),
-			h(Footer, {
+			h(KeyHints, {
 				keys: [
 					['Tab', '补全/选用'],
 					['↑↓', '选择建议'],
 					['Enter', '添加'],
-					['Ctrl+U', '清空'],
 					['Ctrl+Z', '取消'],
 				],
 			}),
 		);
 	}
 
+	const totals = totalCounts(projects, sessions, confirmed);
 	return frame(
-		h(Header, {title: 'HeyClaude', subtitle: totals}),
-		h(Box, {flexDirection: 'column'}, h(ProjectList, {projects, cursor, sessions, confirmed, loading, columns, rows}),
-			screen === 'delete' && current
-				? h(Box, {marginTop: 1, paddingX: 1}, h(Text, {color: 'yellow'}, `从列表移除 ${current.name}？目录和会话不受影响。(y/N)`))
-				: null),
-		h(Footer, {
+		h(TopBar, {
+			left: brand,
+			right: h(Text, null, h(Text, {dimColor: true}, `${projects.length} 个项目`), h(Text, {dimColor: true}, STATUS_ORDER.some(k => totals[k]) ? ' · ' : ''), h(StatusCounts, {counts: totals})),
+		}),
+		h(ProjectList, {projects, cursor, sessions, confirmed, loading, columns, rows}),
+		screen === 'delete' && current
+			? h(Text, {color: 'yellow'}, `从列表移除 ${current.name}？目录和会话不受影响。(y/N)`)
+			: null,
+		h(KeyHints, {
 			message,
 			keys: [
-				['↑↓', '选择'],
 				['Enter', '进入'],
-				...(projects.length ? [[projects.length > 9 ? '序号' : projects.length > 1 ? `1-${projects.length}` : '1', '直接进入']] : []),
 				['a', '添加'],
 				['d', '删除'],
 				['Ctrl+Z', '退出'],
+				['?', '全部按键'],
 			],
 		}),
 	);
