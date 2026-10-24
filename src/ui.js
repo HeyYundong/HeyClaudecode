@@ -29,16 +29,30 @@ export function nameColumn(names, columns) {
 	return Math.max(12, Math.min(40, columns - 30, longest + 3));
 }
 
-// “3 进行中 · 1 需要输入 · 41 完成”：数字在前，只列不为零的
+// 一个状态的数量文字：不为零时用状态色，为零时变灰
+function countText(k, n, numWidth = 0) {
+	const s = STATUS[k];
+	return h(Text, {key: k, color: n ? s.color : undefined, dimColor: !n || s.dim}, `${String(n).padStart(numWidth)} ${s.label}`);
+}
+
+// “3 进行中 · 1 需要输入 · 0 待确认 · 41 完成 · 0 失败”：数字在前，五种状态都列，为零的变灰
 export function StatusCounts({counts, sep = ' · ', keys = STATUS_ORDER}) {
-	const parts = keys.filter(k => counts[k]);
 	return h(
 		Text,
 		null,
-		...parts.flatMap((k, i) => [
-			i ? h(Text, {key: `s${k}`, dimColor: true}, sep) : null,
-			h(Text, {key: k, color: STATUS[k].color, dimColor: STATUS[k].dim}, `${counts[k]} ${STATUS[k].label}`),
-		]),
+		...keys.flatMap((k, i) => [i ? h(Text, {key: `s${k}`, dimColor: true}, sep) : null, countText(k, counts[k] || 0)]),
+	);
+}
+
+// 列表行里的五列数量：每种状态固定一列，数字右对齐，这样各行上下对齐
+// numWidth：这一屏里最大的数有几位
+export function StatusColumns({counts, numWidth = 1, keys = STATUS_ORDER}) {
+	return h(
+		Box,
+		null,
+		...keys.map(k =>
+			h(Box, {key: k, width: numWidth + 1 + textWidth(STATUS[k].label) + 3, flexShrink: 0}, countText(k, counts[k] || 0, numWidth)),
+		),
 	);
 }
 

@@ -33,39 +33,40 @@ hcc             # 默认：项目列表 → 项目里按状态分组的任务列
 hcc --tabs      # 一个界面里用标签切换项目和状态
 ```
 
-**默认布局**：先是项目列表，每个项目一行，只列不为零的状态。进入项目后，任务按状态分组，组之间空一行。两页用同一套样式：左上角是 HeyClaude，右上角是状态合计，每行是箭头、序号或图标、名字，后面紧跟数量或时间。界面上不显示项目目录。
+**默认布局**：先是项目列表，每个项目一行，五种状态固定成五列，数字右对齐，为 0 的显示成灰色的 0，各行上下对齐。进入项目后，任务按状态分组，组之间空一行；分组标题和任务的图标对齐，失败原因单独占一列，时间上下对齐。两页用同一套样式：左上角是 HeyClaude，右上角是五种状态的合计，每行是箭头、序号或图标、名字，后面是数量或时间。界面上不显示项目目录。
 
 ```
-  HeyClaude                    4 个项目 · 3 进行中 · 1 需要输入 · 3 待确认 · 2 失败
+  HeyClaude                 4 个项目 · 3 进行中 · 1 需要输入 · 3 待确认 · 48 完成 · 2 失败
 
-  ❯ 1  HeyAgent        1 进行中   1 需要输入   1 待确认   41 完成   2 失败
-    2  HeyClaudecode   1 进行中   1 待确认   3 完成
-    3  my-api          目录不存在（按 d 移除）
+  ❯ 1  HeyAgent         1 进行中    1 需要输入    1 待确认   41 完成    2 失败
+    2  HeyClaudecode    1 进行中    0 需要输入    1 待确认    3 完成    0 失败
+    3  website          1 进行中    0 需要输入    1 待确认    4 完成    0 失败
+    4  my-api           目录不存在（按 d 移除）
 
   Enter 进入    a 添加    d 删除    Ctrl+Z 退出    ? 全部按键
 
 
-  HeyClaude › HeyAgent           1 进行中 · 1 需要输入 · 1 待确认 · 41 完成 · 2 失败
+  HeyClaude › HeyAgent       1 进行中 · 1 需要输入 · 1 待确认 · 41 完成 · 2 失败
 
-  1 进行中
-    ◌  add-review-page     25 分钟前
+     1 进行中
+    ◌  add-review-page             25 分钟前
 
-  1 需要输入
-  ❯ ●  deploy-config-fix   3 分钟前
+     1 需要输入
+  ❯ ●  deploy-config-fix           3 分钟前
 
-  1 待确认
-    ◆  readme-refresh      12 分钟前
+     1 待确认
+    ◆  readme-refresh              12 分钟前
 
-  41 完成 · 最新 5 个
-    ✓  sort-projects       昨天 14:02
-    ✓  number-projects     10月22日
-    ✓  v1-launcher         10月20日
-    ✓  api-pagination      10月19日
-    ✓  docs-typo-sweep     10月18日
+    41 完成 · 最新 5 个
+    ✓  sort-projects               昨天 14:02
+    ✓  number-projects             10月22日
+    ✓  v1-launcher                 10月20日
+    ✓  api-pagination              10月19日
+    ✓  docs-typo-sweep             10月18日
     ▾  还有 36 个，Enter 展开
 
-  2 失败
-    ✗  migrate-db-schema   出错  1 小时前
+     2 失败
+    ✗  migrate-db-schema   出错    1 小时前
     ✗  flaky-test-hunt     已停止  昨天 18:20
 
   Enter 打开    c 确认    n 新任务    Ctrl+Z 返回    ? 全部按键

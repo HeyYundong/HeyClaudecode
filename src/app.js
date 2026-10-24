@@ -7,7 +7,7 @@ import {repliedAfterConfirm} from './transcripts.js';
 import {completePath} from './complete.js';
 import {loadReviews, saveReviews, withoutConfirmed} from './reviews.js';
 import {NewTask, SessionsScreen, sessionHelp, sessionKeys} from './sessionsScreen.js';
-import {HelpScreen, KeyHints, STATUS_ORDER, StatusCounts, TopBar, nameColumn} from './ui.js';
+import {HelpScreen, KeyHints, STATUS_ORDER, StatusColumns, StatusCounts, TopBar, nameColumn} from './ui.js';
 
 const h = React.createElement;
 const REFRESH_MS = 10_000;
@@ -57,7 +57,7 @@ const LIST_HELP = [
 	},
 ];
 
-// 每个项目一行：序号、名字、不为零的状态数量。样式和任务列表的行一致
+// 每个项目一行：序号、名字、五种状态的数量（固定五列，为零也显示）。样式和任务列表的行一致
 function ProjectList({projects, cursor, sessions, confirmed, loading, columns, rows}) {
 	if (projects.length === 0) {
 		return h(
@@ -70,6 +70,10 @@ function ProjectList({projects, cursor, sessions, confirmed, loading, columns, r
 
 	const numberWidth = Math.max(3, String(projects.length).length + 2);
 	const nameWidth = nameColumn(projects.map(p => p.name), columns - 4);
+	// 所有项目的数量先算好；数字列的宽度按最大的数来定，这样各行上下对齐
+	const allStats = sessions ? new Map(projects.map(p => [p.path, statsFor(sessions, p.path, confirmed)])) : null;
+	const biggest = allStats ? Math.max(0, ...[...allStats.values()].flatMap(s => STATUS_ORDER.map(k => s[k]))) : 0;
+	const numWidth = String(biggest).length;
 
 	// 列表过长时让光标保持在可见窗口内
 	const visible = Math.max(1, rows - 7);
@@ -84,8 +88,7 @@ function ProjectList({projects, cursor, sessions, confirmed, loading, columns, r
 			const index = start + i;
 			const selected = index === cursor;
 			const missing = !dirExists(project.path);
-			const stats = sessions ? statsFor(sessions, project.path, confirmed) : null;
-			const empty = stats && !STATUS_ORDER.some(k => stats[k]);
+			const stats = allStats ? allStats.get(project.path) : null;
 			return h(
 				Box,
 				{key: project.path},
@@ -102,9 +105,7 @@ function ProjectList({projects, cursor, sessions, confirmed, loading, columns, r
 					missing
 						? h(Text, {color: 'yellow'}, '目录不存在（按 d 移除）')
 						: stats
-							? empty
-								? h(Text, {dimColor: true}, '没有任务')
-								: h(StatusCounts, {counts: stats, sep: '   '})
+							? h(StatusColumns, {counts: stats, numWidth})
 							: h(Text, {dimColor: true}, loading ? '…' : ''),
 				),
 			);
@@ -486,7 +487,7 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 	return frame(
 		h(TopBar, {
 			left: brand,
-			right: h(Text, null, h(Text, {dimColor: true}, `${projects.length} 个项目`), h(Text, {dimColor: true}, STATUS_ORDER.some(k => totals[k]) ? ' · ' : ''), h(StatusCounts, {counts: totals})),
+			right: h(Text, null, h(Text, {dimColor: true}, `${projects.length} 个项目`), h(Text, {dimColor: true}, ' · '), h(StatusCounts, {counts: totals})),
 		}),
 		h(ProjectList, {projects, cursor, sessions, confirmed, loading, columns, rows}),
 		screen === 'delete' && current

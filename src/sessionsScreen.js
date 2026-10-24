@@ -63,11 +63,14 @@ export function groupSessions(sessions, projectPath, confirmed) {
 const countsOf = groups => Object.fromEntries(STATUS_ORDER.map(k => [k, groups[k].length]));
 const nameOf = session => (session.name || session.id || session.sessionId) + (session.kind !== 'background' ? '（交互）' : '');
 
-// 默认布局的一行，和项目列表同一套样式：箭头、图标、名字、失败原因、开始时间
-function Row({session, group, selected, nameWidth}) {
+// 失败原因那一列的宽度（“已停止”加两格空）；项目里没有失败任务时不留这一列
+const TAG_WIDTH = 8;
+
+// 默认布局的一行，和项目列表同一套样式：箭头、图标、名字、失败原因、开始时间。
+// 失败原因占固定宽度，所有行的时间上下对齐
+function Row({session, group, selected, nameWidth, tagWidth}) {
 	const s = STATUS[group];
 	const dim = group === 'confirmed';
-	const tag = group === 'failed' ? failTag(session) : '';
 	return h(
 		Box,
 		null,
@@ -78,7 +81,10 @@ function Row({session, group, selected, nameWidth}) {
 			{width: nameWidth, flexShrink: 0},
 			h(Text, {bold: selected, color: selected ? 'red' : undefined, dimColor: dim && !selected, wrap: 'truncate-end'}, nameOf(session)),
 		),
-		h(Text, {dimColor: true}, [tag, relativeTime(session.startedAt)].filter(Boolean).join('  ')),
+		tagWidth
+			? h(Box, {width: tagWidth, flexShrink: 0}, h(Text, {color: group === 'failed' ? 'red' : undefined, dimColor: true}, group === 'failed' ? failTag(session) : ''))
+			: null,
+		h(Text, {dimColor: true}, relativeTime(session.startedAt)),
 	);
 }
 
@@ -119,13 +125,14 @@ function FoldRow({fold, selected, marginBottom = 0}) {
 	);
 }
 
-// 分组标题，写法和状态数量一样：“3 待确认”
-function GroupHeader({group, count, note}) {
+// 分组标题，写法和状态数量一样：“ 3 待确认”。
+// 缩进到图标那一列，和下面的任务对齐；数字按这一屏最大的数右对齐，各组的状态名上下对齐
+function GroupHeader({group, count, note, numWidth}) {
 	const s = STATUS[group];
 	return h(
 		Box,
-		null,
-		h(Text, {bold: true, color: s.color, dimColor: s.dim}, `${count} ${s.label}`),
+		{paddingLeft: 2},
+		h(Text, {bold: true, color: s.color, dimColor: s.dim}, `${String(count).padStart(numWidth)} ${s.label}`),
 		note ? h(Text, {dimColor: true}, ` · ${note}`) : null,
 	);
 }
@@ -395,6 +402,8 @@ export function SessionsScreen({
 
 	// 默认布局：按状态分组，组之间空一行
 	const nameWidth = nameColumn(items.filter(i => i.session).map(i => nameOf(i.session)), columns - 4);
+	const tagWidth = groups.failed.length ? TAG_WIDTH : 0;
+	const numWidth = String(Math.max(0, ...STATUS_ORDER.map(g => groups[g].length))).length;
 	const lines = [];
 	let index = 0;
 	for (const g of STATUS_ORDER) {
@@ -418,9 +427,9 @@ export function SessionsScreen({
 		start > 0 ? h(Text, {dimColor: true}, `  ↑ 还有 ${start} 行`) : null,
 		...lines.slice(start, start + visible).map(line => {
 			if (line.type === 'gap') return h(Text, {key: line.key}, ' ');
-			if (line.type === 'header') return h(GroupHeader, {key: line.key, group: line.group, count: line.count, note: line.note});
+			if (line.type === 'header') return h(GroupHeader, {key: line.key, group: line.group, count: line.count, note: line.note, numWidth});
 			if (line.type === 'fold') return h(FoldRow, {key: line.key, fold: line.fold, selected: line.index === clamp(cursor)});
-			return h(Row, {key: line.key, session: line.session, group: line.group, selected: line.index === clamp(cursor), nameWidth});
+			return h(Row, {key: line.key, session: line.session, group: line.group, selected: line.index === clamp(cursor), nameWidth, tagWidth});
 		}),
 		start + visible < lines.length ? h(Text, {dimColor: true}, `  ↓ 还有 ${lines.length - start - visible} 行`) : null,
 		askLine,
