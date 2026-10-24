@@ -6,8 +6,8 @@ import {STATUS, STATUS_ORDER, nameColumn} from './ui.js';
 
 const h = React.createElement;
 
-// 完成的任务默认只列最近几个，按 h 展开
-const RECENT_DONE = 3;
+// 每个分组默认只列最新的几个，多出来的折叠成一行，光标移上去按 Enter 展开或收起
+const RECENT = 5;
 
 const pad = n => String(n).padStart(2, '0');
 // “昨天 18:20 开始”要空格，“12 分钟前开始”不要
@@ -107,6 +107,18 @@ function TwoLineRow({session, group, selected, projectPath, confirmedAt}) {
 	);
 }
 
+// 折叠行：“还有 12 个，Enter 展开” / “收起，只显示最新 5 个”，可以像任务一样选中
+function FoldRow({fold, selected, marginBottom = 0}) {
+	const text = fold.open ? `收起，只显示最新 ${RECENT} 个` : `还有 ${fold.hidden} 个，Enter 展开`;
+	return h(
+		Box,
+		{marginBottom},
+		h(Box, {width: 2, flexShrink: 0}, h(Text, {color: 'red'}, selected ? '❯' : ' ')),
+		h(Box, {width: 3, flexShrink: 0}, h(Text, {dimColor: true}, fold.open ? '▴' : '▾')),
+		h(Text, {bold: selected, color: selected ? 'red' : undefined, dimColor: !selected}, text),
+	);
+}
+
 // 分组标题，写法和状态数量一样：“3 待确认”
 function GroupHeader({group, count, note}) {
 	const s = STATUS[group];
@@ -135,11 +147,11 @@ export function sessionHelp(layout) {
 			keys: [
 				['↑ ↓ / k j', '选择任务'],
 				['Enter / o', '打开会话（claude attach），在会话里按 Ctrl+Z 回来'],
+				['Enter', `在“还有 N 个”那一行上：展开或收起这一组（默认只显示最新 ${RECENT} 个）`],
 				['c', '确认待确认的任务，它变成完成；在完成的任务上按则取消确认'],
 				['C', '确认这个项目下全部待确认任务'],
 				['u', '撤销最近一次确认'],
 				['n', '新任务：在项目目录里用 claude --bg 启动'],
-				...(layout === 'tabs' ? [] : [['h', '展开或收起全部完成的任务']]),
 				['r', '刷新'],
 			],
 		},
@@ -177,7 +189,8 @@ export function SessionsScreen({
 	// tabs 布局当前的状态标签；null 表示还没手动选过，用默认的
 	// 从会话回来时 initialView 带着离开前的标签和展开状态
 	const [tabChoice, setTabChoice] = useState(() => (STATUS_ORDER.includes(initialView?.tab) ? initialView.tab : null));
-	const [showAllDone, setShowAllDone] = useState(() => Boolean(initialView?.showAllDone));
+	// 展开了的分组
+	const [expanded, setExpanded] = useState(() => new Set(Array.isArray(initialView?.expanded) ? initialView.expanded : []));
 	const [asking, setAsking] = useState(false);
 	const [cursor, setCursorState] = useState(0);
 	const cursorRef = useRef(0);
@@ -193,18 +206,35 @@ export function SessionsScreen({
 	// 默认标签：先看需要你处理的
 	const tab = tabChoice ?? ['blocked', 'pending', 'failed', 'working', 'confirmed'].find(k => counts[k]) ?? 'working';
 
-	// 可以选中的任务，按显示顺序
-	const shownIn = g => (!tabs && g === 'confirmed' && !showAllDone ? groups[g].slice(0, RECENT_DONE) : groups[g]);
+	// 可以选中的行，按显示顺序：任务，以及超过 RECENT 个的分组末尾的折叠行
+	const foldable = g => groups[g].length > RECENT;
+	const shownIn = g => (foldable(g) && !expanded.has(g) ? groups[g].slice(0, RECENT) : groups[g]);
 	const visibleGroups = tabs ? [tab] : STATUS_ORDER;
-	const items = visibleGroups.flatMap(g => shownIn(g).map(session => ({session, group: g})));
+	const items = visibleGroups.flatMap(g => [
+		...shownIn(g).map(session => ({session, group: g})),
+		...(foldable(g) ? [{fold: {open: expanded.has(g), hidden: groups[g].length - RECENT}, group: g}] : []),
+	]);
 	const clamp = i => Math.max(0, Math.min(i, items.length - 1));
+
+	// 展开或收起一组。收起时光标回到折叠行；展开时光标留在原位，正好落在第一个新露出来的任务上
+	const toggleGroup = g => {
+		const first = items.findIndex(i => i.group === g);
+		const next = new Set(expanded);
+		if (next.has(g)) {
+			next.delete(g);
+			setCursor(first + RECENT);
+		} else {
+			next.add(g);
+		}
+		setExpanded(next);
+	};
 
 	// 从会话返回时，数据到了以后把光标放回刚才打开的任务上
 	const restoredRef = useRef(!initialSessionId);
 	useEffect(() => {
 		if (restoredRef.current || !sessions) return;
 		restoredRef.current = true;
-		const index = items.findIndex(i => i.session.sessionId === initialSessionId);
+		const index = items.findIndex(i => i.session?.sessionId === initialSessionId);
 		if (index >= 0) setCursor(index);
 	}, [sessions]);
 
@@ -232,7 +262,6 @@ export function SessionsScreen({
 				return onSwitchProject(key.leftArrow ? -1 : 1);
 			}
 			if (tabs && key.tab) return switchTab(key.shift ? -1 : 1);
-			if (!tabs && input === 'h') return setShowAllDone(v => !v);
 			if (input === 'r') return onRefresh();
 			if (input === 'n') return onNewTask();
 			if (input === 'u') {
@@ -249,13 +278,18 @@ export function SessionsScreen({
 			}
 			const item = items[clamp(cursorRef.current)];
 			if (!item) return;
+			if (item.fold) {
+				if (input === 'o' || key.return) return toggleGroup(item.group);
+				if (input === 'c') return setMessage({text: '先按 Enter 展开，再选中要确认的任务', color: 'yellow'});
+				return;
+			}
 			const {session, group} = item;
 			const name = session.name || session.id;
 			if (input === 'o' || key.return) {
 				if (session.kind !== 'background') {
 					return setMessage({text: '这是交互会话，请在它自己的终端里操作', color: 'yellow'});
 				}
-				return onOpenSession(session, {tab, showAllDone});
+				return onOpenSession(session, {tab, expanded: [...expanded]});
 			}
 			if (input === 'c') {
 				if (group === 'pending') return confirm([session.sessionId], `已确认 ${name}`);
@@ -342,14 +376,16 @@ export function SessionsScreen({
 				items.length ? null : h(Text, {dimColor: true}, `没有${STATUS[tab].label}的任务`),
 				start > 0 ? h(Text, {dimColor: true}, `  ↑ 还有 ${start} 个`) : null,
 				...items.slice(start, start + visible).map((item, i) =>
-					h(TwoLineRow, {
-						key: item.session.sessionId,
-						session: item.session,
-						group: item.group,
-						selected: start + i === c,
-						projectPath: project.path,
-						confirmedAt: confirmed[item.session.sessionId],
-					}),
+					item.fold
+						? h(FoldRow, {key: `fold-${item.group}`, fold: item.fold, selected: start + i === c, marginBottom: 1})
+						: h(TwoLineRow, {
+								key: item.session.sessionId,
+								session: item.session,
+								group: item.group,
+								selected: start + i === c,
+								projectPath: project.path,
+								confirmedAt: confirmed[item.session.sessionId],
+						  }),
 				),
 				start + visible < items.length ? h(Text, {dimColor: true}, `  ↓ 还有 ${items.length - start - visible} 个`) : null,
 			),
@@ -358,20 +394,21 @@ export function SessionsScreen({
 	}
 
 	// 默认布局：按状态分组，组之间空一行
-	const nameWidth = nameColumn(items.map(i => nameOf(i.session)), columns - 4);
+	const nameWidth = nameColumn(items.filter(i => i.session).map(i => nameOf(i.session)), columns - 4);
 	const lines = [];
 	let index = 0;
 	for (const g of STATUS_ORDER) {
 		if (!groups[g].length) continue;
 		if (lines.length) lines.push({type: 'gap', key: `gap-${g}`});
-		const collapsed = g === 'confirmed' && !showAllDone && groups[g].length > RECENT_DONE;
-		const note = collapsed ? `最近 ${RECENT_DONE} 个` : null;
+		const note = foldable(g) && !expanded.has(g) ? `最新 ${RECENT} 个` : null;
 		lines.push({type: 'header', key: `h-${g}`, group: g, count: groups[g].length, note});
 		for (const session of shownIn(g)) lines.push({type: 'item', key: session.sessionId, session, group: g, index: index++});
-		if (collapsed) lines.push({type: 'more', key: 'more', text: `还有 ${groups[g].length - RECENT_DONE} 个，按 h 展开`});
+		if (foldable(g)) {
+			lines.push({type: 'fold', key: `fold-${g}`, fold: {open: expanded.has(g), hidden: groups[g].length - RECENT}, index: index++});
+		}
 	}
 	const visible = Math.max(4, rows - 9);
-	const cursorLine = Math.max(0, lines.findIndex(l => l.type === 'item' && l.index === clamp(cursor)));
+	const cursorLine = Math.max(0, lines.findIndex(l => l.index !== undefined && l.index === clamp(cursor)));
 	const start = Math.min(Math.max(0, cursorLine - visible + 1), Math.max(0, lines.length - visible));
 
 	return h(
@@ -382,7 +419,7 @@ export function SessionsScreen({
 		...lines.slice(start, start + visible).map(line => {
 			if (line.type === 'gap') return h(Text, {key: line.key}, ' ');
 			if (line.type === 'header') return h(GroupHeader, {key: line.key, group: line.group, count: line.count, note: line.note});
-			if (line.type === 'more') return h(Box, {key: line.key, paddingLeft: 5}, h(Text, {dimColor: true}, line.text));
+			if (line.type === 'fold') return h(FoldRow, {key: line.key, fold: line.fold, selected: line.index === clamp(cursor)});
 			return h(Row, {key: line.key, session: line.session, group: line.group, selected: line.index === clamp(cursor), nameWidth});
 		}),
 		start + visible < lines.length ? h(Text, {dimColor: true}, `  ↓ 还有 ${lines.length - start - visible} 行`) : null,
