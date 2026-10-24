@@ -117,7 +117,8 @@ impl App {
         self.current.and_then(|id| self.convs.get(&id))
     }
 
-    /// 按标题或分组做不区分大小写的子串匹配，最多 50 条；空查询返回最近的
+    /// 按标题或分组做不区分大小写的子串匹配，最多 50 条。
+    /// 同组的排在一起：组按其中最新一条的时间排，组内新的在前
     pub fn switcher_matches(&self, query: &str) -> Vec<&SwitchEntry> {
         let q = query.to_lowercase();
         let mut hits: Vec<&SwitchEntry> = self
@@ -125,7 +126,17 @@ impl App {
             .iter()
             .filter(|e| q.is_empty() || e.label.to_lowercase().contains(&q) || e.group.to_lowercase().contains(&q))
             .collect();
-        hits.sort_by(|a, b| b.updated.cmp(&a.updated));
+        let mut newest: HashMap<&str, std::time::SystemTime> = HashMap::new();
+        for e in &hits {
+            let t = newest.entry(e.group.as_str()).or_insert(e.updated);
+            *t = (*t).max(e.updated);
+        }
+        hits.sort_by(|a, b| {
+            newest[b.group.as_str()]
+                .cmp(&newest[a.group.as_str()])
+                .then_with(|| a.group.cmp(&b.group))
+                .then_with(|| b.updated.cmp(&a.updated))
+        });
         hits.truncate(50);
         hits
     }
