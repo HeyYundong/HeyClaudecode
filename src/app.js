@@ -218,7 +218,7 @@ function AddProject({projects, sessions, onDone, onCancel}) {
 	);
 }
 
-export function App({initialProjects, initialPath, initialMessage, initialScreen, forwardedArgs}) {
+export function App({initialProjects, initialPath, initialMessage, initialScreen, initialSessionId, forwardedArgs}) {
 	const {exit} = useApp();
 	// 根节点比终端窄一列：有的终端（如 Windows Terminal）写满最后一列会被截断
 	const {columns, rows} = useTerminalSize();
@@ -292,12 +292,18 @@ export function App({initialProjects, initialPath, initialMessage, initialScreen
 
 	const current = projects[cursor];
 
-	// 进入 claude agents；returnTo 决定退出 agents 后回到列表还是审阅页
-	const enterProject = (project, returnTo = 'list') => {
+	// 把终端交给 claude：打开某个会话（claude attach），或者打开 agents 列表。
+	// 结束后都回到这个项目的审阅页
+	const openSession = (project, session) => exit({type: 'attach', project, session});
+	const openAgents = project => {
 		if (!dirExists(project.path)) {
 			return setMessage({text: `目录不存在：${project.path}`, color: 'red'});
 		}
-		return exit({type: 'enter', project, returnTo});
+		return exit({type: 'agents', project});
+	};
+	const openReview = index => {
+		setCursor(index);
+		setScreen('review');
 	};
 
 	// 数字键按序号进入；序号还可能更长时（比如有 12 个项目时按了 1）稍等下一位
@@ -320,12 +326,12 @@ export function App({initialProjects, initialPath, initialMessage, initialScreen
 		setCursor(n - 1);
 		if (n * 10 > projects.length) {
 			clearDigits();
-			return enterProject(projects[n - 1]);
+			return openReview(n - 1);
 		}
 		digitsRef.current = digits;
 		digitTimerRef.current = setTimeout(() => {
 			digitsRef.current = '';
-			enterProject(projects[n - 1]);
+			openReview(n - 1);
 		}, DIGIT_WAIT_MS);
 	};
 
@@ -376,7 +382,9 @@ export function App({initialProjects, initialPath, initialMessage, initialScreen
 				setMessage,
 				columns,
 				rows,
-				onOpen: () => enterProject(current, 'review'),
+				initialSessionId,
+				onOpenSession: session => openSession(current, session),
+				onOpenAgents: () => openAgents(current),
 				onBack: () => setScreen('list'),
 				onRefresh: refresh,
 			}),

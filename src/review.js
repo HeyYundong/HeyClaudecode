@@ -1,4 +1,4 @@
-import React, {useMemo, useRef, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Box, Text, useInput} from 'ink';
 import {classify, sessionsFor} from './sessions.js';
 import {withConfirmed, withoutConfirmed} from './reviews.js';
@@ -108,17 +108,30 @@ function Row({session, group, selected, confirmedAt, columns}) {
 }
 
 export const REVIEW_KEYS = [
-	['↑↓', '选择'],
+	['Enter', '打开会话'],
 	['c', '确认'],
 	['C', '全部确认'],
 	['u', '撤销'],
-	['o', '打开 agents'],
-	['h', '显示已确认'],
-	['r', '刷新'],
+	['h', '已确认'],
+	['A', 'agents 列表'],
 	['Esc', '返回'],
 ];
 
-export function ReviewPage({project, sessions, loading, confirmed, saveConfirmed, onOpen, onBack, onRefresh, setMessage, columns, rows}) {
+export function ReviewPage({
+	project,
+	sessions,
+	loading,
+	confirmed,
+	saveConfirmed,
+	initialSessionId,
+	onOpenSession,
+	onOpenAgents,
+	onBack,
+	onRefresh,
+	setMessage,
+	columns,
+	rows,
+}) {
 	const [showConfirmed, setShowConfirmed] = useState(false);
 	const [asking, setAsking] = useState(false);
 	const [cursor, setCursorState] = useState(0);
@@ -137,6 +150,15 @@ export function ReviewPage({project, sessions, loading, confirmed, saveConfirmed
 	const items = groups.flatMap(g => g.items.map(session => ({session, group: g.key})));
 	const clamp = i => Math.max(0, Math.min(i, items.length - 1));
 
+	// 从会话返回时，会话数据到了以后把光标放回刚才打开的那个任务上
+	const restoredRef = useRef(!initialSessionId);
+	useEffect(() => {
+		if (restoredRef.current || !sessions) return;
+		restoredRef.current = true;
+		const index = items.findIndex(i => i.session.sessionId === initialSessionId);
+		if (index >= 0) setCursor(index);
+	}, [sessions]);
+
 	const confirm = (ids, text) => {
 		if (!saveConfirmed(withConfirmed(confirmed, ids))) return;
 		undoRef.current.push(ids);
@@ -149,7 +171,15 @@ export function ReviewPage({project, sessions, loading, confirmed, saveConfirmed
 			if (key.escape || input === 'q' || key.leftArrow) return onBack();
 			if (key.upArrow || input === 'k') return setCursor(c => clamp(c - 1));
 			if (key.downArrow || input === 'j') return setCursor(c => clamp(c + 1));
-			if (input === 'o' || key.return) return onOpen();
+			if (input === 'A') return onOpenAgents();
+			if (input === 'o' || key.return) {
+				const item = items[clamp(cursorRef.current)];
+				if (!item) return;
+				if (item.session.kind !== 'background') {
+					return setMessage({text: '这是交互会话，请在它自己的终端里操作', color: 'yellow'});
+				}
+				return onOpenSession(item.session);
+			}
 			if (input === 'r') return onRefresh();
 			if (input === 'h') {
 				setShowConfirmed(v => !v);
@@ -180,7 +210,7 @@ export function ReviewPage({project, sessions, loading, confirmed, saveConfirmed
 					return;
 				}
 				return setMessage({
-					text: group === 'blocked' ? '这个任务在等你回复，按 o 进入处理' : '任务还在运行，结束后才能确认',
+					text: group === 'blocked' ? '这个任务在等你回复，按 Enter 打开它' : '任务还在运行，结束后才能确认',
 					color: 'yellow',
 				});
 			}
@@ -239,9 +269,12 @@ export function ReviewPage({project, sessions, loading, confirmed, saveConfirmed
 				  }),
 		),
 		start + visible < lines.length ? h(Text, {dimColor: true}, `  ↓ 还有 ${lines.length - start - visible} 行`) : null,
-		hiddenConfirmed
-			? h(Box, {marginTop: 1}, h(Text, {dimColor: true}, `已隐藏 ${hiddenConfirmed} 个已确认的任务（h 显示）`))
-			: null,
+		h(
+			Box,
+			{marginTop: 1, flexDirection: 'column'},
+			hiddenConfirmed ? h(Text, {dimColor: true}, `已隐藏 ${hiddenConfirmed} 个已确认的任务（h 显示）`) : null,
+			items.length ? h(Text, {dimColor: true}, '打开会话后按 Ctrl+Z 回到这里') : null,
+		),
 		asking
 			? h(
 					Box,
