@@ -24,19 +24,23 @@ export function fetchSessions() {
 }
 
 // 会话归类：
-//   working   进行中（包括已结束后又被你唤醒的后台任务）
+//   working   进行中
 //   blocked   需要输入
 //   pending   待确认：Claude 说做完了，你还没确认
 //   confirmed 完成：你确认过
 //   failed    失败：出错（failed）或被停止（stopped），不需要确认
 //   idle      空闲的交互会话（不需要处理，不统计）
+//
+// 后台任务只看 Claude Code 记录的 state。进程的 status（busy / idle / waiting）不作数：
+// 它可能长时间卡在 busy，而你回复一个结束的任务时 state 本身会变回 working。
+// 交互会话没有 state，只能看 status 是不是 busy。
 // 其余结束状态（包括 Claude Code 以后新增的）都按“做完了”处理，进待确认
 const FAILED_STATES = new Set(['failed', 'stopped']);
 
 export function classify(session, confirmed = {}) {
-	if (session.status === 'busy' || session.state === 'working') return 'working';
+	if (session.kind !== 'background') return session.status === 'busy' ? 'working' : 'idle';
+	if (session.state === 'working') return 'working';
 	if (session.state === 'blocked') return 'blocked';
-	if (session.kind !== 'background') return 'idle';
 	if (FAILED_STATES.has(session.state)) return 'failed';
 	return confirmed[session.sessionId] ? 'confirmed' : 'pending';
 }
