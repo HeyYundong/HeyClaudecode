@@ -18,13 +18,15 @@
 
 ## 安装
 
-需要 Node.js 22+，并且 `claude` 在 PATH 里。
+需要 Rust 工具链（`cargo`），并且 `claude` 在 PATH 里。
 
 ```bash
 git clone <repo> HeyClaudeCode && cd HeyClaudeCode
-npm install
-npm link        # 全局注册 heyclaude 和 hcc 两个命令
+cargo install --path .                           # 装到 ~/.cargo/bin/hcc
+ln -sf ~/.cargo/bin/hcc ~/.cargo/bin/heyclaude   # 可选：也能用 heyclaude 启动
 ```
+
+HeyClaude 是一个约 1 MB 的独立程序，启动只要几毫秒，常驻内存约 4 MB。以前用 `npm link` 装过 Node.js 版的话，先 `npm rm -g heyclaude` 删掉，免得 PATH 里的旧命令盖住新的。
 
 ## 两种布局
 
@@ -96,7 +98,7 @@ hcc --tabs      # 一个界面里用标签切换项目和状态
 | `1`–`9`… | 按序号直接进入。超过 9 个项目时可以连按多位（如 `1` `2` 进入第 12 个）；按完一位后如果还可能有下一位，会等 0.6 秒，也可以按 `Enter` 立刻进入 |
 | `a` | 添加项目 |
 | `d` | 从列表移除项目（只改 HeyClaude 的列表，目录和会话都不动） |
-| `r` | 刷新（每 10 秒也会自动刷新） |
+| `r` | 刷新（任务状态一变就会自动刷新） |
 | `?` | 全部按键 |
 | `Ctrl+Z` / `q` | 退出 |
 
@@ -134,6 +136,7 @@ hcc --model opus --effort high
 - 只有待确认的任务需要确认。进行中、需要输入和失败的任务不能确认。
 - 后台任务只看 Claude Code 记录的状态（state），不看进程此刻忙不忙（status）。进程可能长时间卡在 busy，但任务早已结束；而你回复一个结束的任务时，Claude Code 会把它的状态改回进行中，所以不会漏掉。交互会话没有状态记录，按进程忙不忙判断。
 - 完成的任务只要在你确认之后又有了新对话，就会自动取消确认，回到待确认（还在进行时先显示为进行中）。即使 Claude 在你回到 HeyClaude 之前就答完了，或者 HeyClaude 当时没开着，也不会漏掉。只打开看看、或者只执行 `/status` 这类斜杠命令，不算新对话。
+- 刷新时机：监听 Claude Code 的任务状态文件（`~/.claude/jobs/*/state.json` 和 `~/.claude/sessions/`），有变化就在 0.3 秒后调用一次 `claude agents --json --all`，两次之间至少隔 2 秒；另外每 30 秒兜底刷新一次。这些文件只用来知道“该刷新了”，状态本身仍然从 `claude agents` 读。刷新在后台线程里做，不会卡住按键。
 - 判断“有没有新对话”要读 Claude Code 存在本机的对话记录（`~/.claude/projects/` 下的文件，设置了 `$CLAUDE_CONFIG_DIR` 就用它）。只读不写，只看文件末尾一段；这不是公开接口，以后读不到时会自动退回到只看任务状态。
 - 项目目录下的子目录（包括 `.claude/worktrees/*`）都算这个项目的任务。
 - `claude agents --json` 只给出开始时间，所以列表里显示的是“多久之前开始”。
@@ -163,11 +166,12 @@ hcc --model opus --effort high
 
 ## 代码结构
 
-- `bin/heyclaude.js`：入口。解析 `--tabs`；主循环是“显示界面 → 把终端交给 `claude attach` → 回到任务列表”
-- `src/app.js`：Ink 界面（项目列表、添加、删除确认、新任务）
-- `src/sessionsScreen.js`：任务列表，两种布局共用；时间格式
-- `src/ui.js`：五种状态的定义，以及顶部栏、底部按键、状态数量、帮助页这些共用界面
-- `src/sessions.js`：读取 `claude agents --json`，给会话归类并按项目统计
-- `src/reviews.js`：reviews.json 的读写
-- `src/store.js`：projects.json 的读写、校验和排序
-- `src/complete.js`：路径 Tab 补全
+Rust 写的，界面用 [ratatui](https://ratatui.rs)。`cargo test` 跑单元测试。
+
+- `src/main.rs`：入口。解析参数、设置终端；主循环是“处理按键和后台消息 → 重画 → 需要时把终端交给 `claude attach`，回来后回到任务列表”
+- `src/app.rs`：界面状态、按键处理和绘制（项目列表、添加、删除确认、任务列表的两种布局、新任务、帮助页）
+- `src/worker.rs`：后台线程：调用 `claude agents` 刷新、监听任务状态文件、用 `claude --bg` 启动新任务
+- `src/sessions.rs`：解析 `claude agents --json`，给会话归类、分组并按项目统计
+- `src/transcripts.rs`：读对话记录末尾，判断确认之后有没有新对话
+- `src/store.rs`：projects.json 和 reviews.json 的读写、校验、排序，路径 Tab 补全
+- `src/text.rs`：显示宽度、截断、时间格式、五种状态的图标和名字
