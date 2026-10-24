@@ -23,6 +23,12 @@ export function textWidth(text) {
 	return width;
 }
 
+// 列表里名字一栏的宽度：项目列表和任务列表用同一个算法，右侧信息紧跟在名字后面
+export function nameColumn(names, columns) {
+	const longest = Math.max(0, ...names.map(textWidth));
+	return Math.max(12, Math.min(40, columns - 30, longest + 3));
+}
+
 // “3 进行中 · 1 需要输入 · 41 完成”：数字在前，只列不为零的
 export function StatusCounts({counts, sep = ' · ', keys = STATUS_ORDER}) {
 	const parts = keys.filter(k => counts[k]);

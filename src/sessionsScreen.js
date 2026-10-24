@@ -2,7 +2,7 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Box, Text, useInput} from 'ink';
 import {classify, sessionsFor} from './sessions.js';
 import {withConfirmed, withoutConfirmed} from './reviews.js';
-import {STATUS, STATUS_ORDER, StatusCounts, textWidth} from './ui.js';
+import {STATUS, STATUS_ORDER, nameColumn} from './ui.js';
 
 const h = React.createElement;
 
@@ -32,10 +32,10 @@ export function relativeTime(time, now = Date.now()) {
 	return `${sameYear ? '' : date.getFullYear() + '年'}${date.getMonth() + 1}月${date.getDate()}日`;
 }
 
-// 会话在项目里的位置：项目根目录 / worktree 名字 / 子目录
+// 会话在项目里的位置：worktree 名字或子目录；就在项目目录里时不显示
 export function whereIn(session, projectPath) {
 	const cwd = session.cwd || '';
-	if (cwd === projectPath) return '项目根目录';
+	if (cwd === projectPath) return '';
 	const m = cwd.match(/\/\.claude\/worktrees\/([^/]+)/);
 	if (m) return `worktree: ${m[1]}`;
 	return cwd.startsWith(projectPath + '/') ? cwd.slice(projectPath.length + 1) : cwd;
@@ -53,32 +53,32 @@ export function groupSessions(sessions, projectPath, confirmed) {
 	}
 	const newest = (a, b) => (b.startedAt || 0) - (a.startedAt || 0);
 	for (const key of STATUS_ORDER) if (key !== 'confirmed') groups[key].sort(newest);
-	groups.confirmed.sort((a, b) => String(confirmed[b.sessionId]).localeCompare(String(confirmed[a.sessionId])));
+	// 一起确认的（确认时间相同）再按开始时间排
+	groups.confirmed.sort(
+		(a, b) => String(confirmed[b.sessionId]).localeCompare(String(confirmed[a.sessionId])) || newest(a, b),
+	);
 	return groups;
 }
 
 const countsOf = groups => Object.fromEntries(STATUS_ORDER.map(k => [k, groups[k].length]));
 const nameOf = session => (session.name || session.id || session.sessionId) + (session.kind !== 'background' ? '（交互）' : '');
 
-// 默认布局的一行：图标、名字、失败原因、开始时间
-function Row({session, group, selected, columns}) {
+// 默认布局的一行，和项目列表同一套样式：箭头、图标、名字、失败原因、开始时间
+function Row({session, group, selected, nameWidth}) {
 	const s = STATUS[group];
 	const dim = group === 'confirmed';
-	const tagWidth = 8;
-	const timeWidth = 12;
-	const nameWidth = Math.max(12, columns - 5 - tagWidth - timeWidth - 2);
+	const tag = group === 'failed' ? failTag(session) : '';
 	return h(
 		Box,
 		null,
 		h(Box, {width: 2, flexShrink: 0}, h(Text, {color: 'red'}, selected ? '❯' : ' ')),
 		h(Box, {width: 3, flexShrink: 0}, h(Text, {color: s.color, dimColor: s.dim}, s.icon)),
-		h(Box, {width: nameWidth}, h(Text, {bold: selected, dimColor: dim && !selected, wrap: 'truncate-end'}, nameOf(session))),
-		h(Box, {width: tagWidth, flexShrink: 0}, h(Text, {dimColor: true}, group === 'failed' ? failTag(session) : '')),
 		h(
 			Box,
-			{width: timeWidth, flexShrink: 0, justifyContent: 'flex-end'},
-			h(Text, {dimColor: true, wrap: 'truncate-end'}, relativeTime(session.startedAt)),
+			{width: nameWidth, flexShrink: 0},
+			h(Text, {bold: selected, color: selected ? 'red' : undefined, dimColor: dim && !selected, wrap: 'truncate-end'}, nameOf(session)),
 		),
+		h(Text, {dimColor: true}, [tag, relativeTime(session.startedAt)].filter(Boolean).join('  ')),
 	);
 }
 
@@ -107,17 +107,14 @@ function TwoLineRow({session, group, selected, projectPath, confirmedAt}) {
 	);
 }
 
-// 分组标题：“待确认 3 ──────────”
-function GroupHeader({group, count, columns}) {
+// 分组标题，写法和状态数量一样：“3 待确认”
+function GroupHeader({group, count, note}) {
 	const s = STATUS[group];
-	const title = s.label;
-	const rule = '─'.repeat(Math.max(4, columns - textWidth(title) - textWidth(count) - 4));
 	return h(
 		Box,
 		null,
-		h(Text, {bold: true, color: s.color, dimColor: s.dim}, title),
-		h(Text, {dimColor: true}, ` ${count} `),
-		h(Text, {dimColor: true}, rule),
+		h(Text, {bold: true, color: s.color, dimColor: s.dim}, `${count} ${s.label}`),
+		note ? h(Text, {dimColor: true}, ` · ${note}`) : null,
 	);
 }
 
@@ -360,15 +357,16 @@ export function SessionsScreen({
 		);
 	}
 
-	// 默认布局：按状态分组，组之间空一行，组标题带分隔线
+	// 默认布局：按状态分组，组之间空一行
+	const nameWidth = nameColumn(items.map(i => nameOf(i.session)), columns - 4);
 	const lines = [];
 	let index = 0;
 	for (const g of STATUS_ORDER) {
 		if (!groups[g].length) continue;
 		if (lines.length) lines.push({type: 'gap', key: `gap-${g}`});
 		const collapsed = g === 'confirmed' && !showAllDone && groups[g].length > RECENT_DONE;
-		const count = collapsed ? `${groups[g].length} · 最近 ${RECENT_DONE} 个` : String(groups[g].length);
-		lines.push({type: 'header', key: `h-${g}`, group: g, count});
+		const note = collapsed ? `最近 ${RECENT_DONE} 个` : null;
+		lines.push({type: 'header', key: `h-${g}`, group: g, count: groups[g].length, note});
 		for (const session of shownIn(g)) lines.push({type: 'item', key: session.sessionId, session, group: g, index: index++});
 		if (collapsed) lines.push({type: 'more', key: 'more', text: `还有 ${groups[g].length - RECENT_DONE} 个，按 h 展开`});
 	}
@@ -383,9 +381,9 @@ export function SessionsScreen({
 		start > 0 ? h(Text, {dimColor: true}, `  ↑ 还有 ${start} 行`) : null,
 		...lines.slice(start, start + visible).map(line => {
 			if (line.type === 'gap') return h(Text, {key: line.key}, ' ');
-			if (line.type === 'header') return h(GroupHeader, {key: line.key, group: line.group, count: line.count, columns: columns - 4});
+			if (line.type === 'header') return h(GroupHeader, {key: line.key, group: line.group, count: line.count, note: line.note});
 			if (line.type === 'more') return h(Box, {key: line.key, paddingLeft: 5}, h(Text, {dimColor: true}, line.text));
-			return h(Row, {key: line.key, session: line.session, group: line.group, selected: line.index === clamp(cursor), columns: columns - 4});
+			return h(Row, {key: line.key, session: line.session, group: line.group, selected: line.index === clamp(cursor), nameWidth});
 		}),
 		start + visible < lines.length ? h(Text, {dimColor: true}, `  ↓ 还有 ${lines.length - start - visible} 行`) : null,
 		askLine,
@@ -415,7 +413,7 @@ export function NewTask({project, onSubmit, onCancel}) {
 	return h(
 		Box,
 		{flexDirection: 'column'},
-		h(Text, {dimColor: true}, `在 ${project.path} 里用 claude --bg 启动一个后台任务`),
+		h(Text, {dimColor: true}, `在 ${project.name} 里用 claude --bg 启动一个后台任务`),
 		h(
 			Box,
 			{marginTop: 1},

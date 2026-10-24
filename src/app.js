@@ -6,7 +6,7 @@ import {fetchSessions, reactivated, statsFor, suggestPaths} from './sessions.js'
 import {completePath} from './complete.js';
 import {loadReviews, saveReviews, withoutConfirmed} from './reviews.js';
 import {NewTask, SessionsScreen, sessionHelp, sessionKeys} from './sessionsScreen.js';
-import {HelpScreen, KeyHints, STATUS_ORDER, StatusCounts, TopBar} from './ui.js';
+import {HelpScreen, KeyHints, STATUS_ORDER, StatusCounts, TopBar, nameColumn} from './ui.js';
 
 const h = React.createElement;
 const REFRESH_MS = 10_000;
@@ -56,7 +56,7 @@ const LIST_HELP = [
 	},
 ];
 
-// 每个项目两行：名字和不为零的状态数量，下面是灰色的目录；项目之间空一行
+// 每个项目一行：序号、名字、不为零的状态数量。样式和任务列表的行一致
 function ProjectList({projects, cursor, sessions, confirmed, loading, columns, rows}) {
 	if (projects.length === 0) {
 		return h(
@@ -67,11 +67,11 @@ function ProjectList({projects, cursor, sessions, confirmed, loading, columns, r
 		);
 	}
 
-	const numberWidth = String(projects.length).length + 2;
-	const nameWidth = Math.min(28, Math.max(6, ...projects.map(p => p.name.length)) + 3);
+	const numberWidth = Math.max(3, String(projects.length).length + 2);
+	const nameWidth = nameColumn(projects.map(p => p.name), columns - 4);
 
-	// 列表过长时让光标保持在可见窗口内（每个项目占三行）
-	const visible = Math.max(1, Math.floor((rows - 7) / 3));
+	// 列表过长时让光标保持在可见窗口内
+	const visible = Math.max(1, rows - 7);
 	const start = Math.min(Math.max(0, cursor - visible + 1), Math.max(0, projects.length - visible));
 	const slice = projects.slice(start, start + visible);
 
@@ -87,35 +87,24 @@ function ProjectList({projects, cursor, sessions, confirmed, loading, columns, r
 			const empty = stats && !STATUS_ORDER.some(k => stats[k]);
 			return h(
 				Box,
-				{key: project.path, flexDirection: 'column', marginBottom: 1},
+				{key: project.path},
 				h(
 					Box,
 					null,
 					h(Box, {width: 2, flexShrink: 0}, h(Text, {color: 'red'}, selected ? '❯' : ' ')),
-					h(
-						Box,
-						{width: numberWidth, flexShrink: 0},
-						h(Text, {color: selected ? 'red' : undefined, dimColor: !selected}, `${index + 1}.`.padStart(numberWidth - 1)),
-					),
+					h(Box, {width: numberWidth, flexShrink: 0}, h(Text, {dimColor: true}, `${index + 1}`)),
 					h(
 						Box,
 						{width: nameWidth, flexShrink: 0},
-						h(Text, {bold: true, color: selected ? 'red' : undefined, wrap: 'truncate-end'}, project.name),
+						h(Text, {bold: selected, color: selected ? 'red' : undefined, wrap: 'truncate-end'}, project.name),
 					),
-					stats
-						? empty
-							? h(Text, {dimColor: true}, '没有任务')
-							: h(StatusCounts, {counts: stats, sep: '   '})
-						: h(Text, {dimColor: true}, loading ? '…' : ''),
-				),
-				h(
-					Box,
-					{paddingLeft: 2 + numberWidth},
-					h(
-						Text,
-						{dimColor: !missing, color: missing ? 'yellow' : undefined, wrap: 'truncate-middle'},
-						missing ? `${project.path}（目录不存在）` : project.path,
-					),
+					missing
+						? h(Text, {color: 'yellow'}, '目录不存在（按 d 移除）')
+						: stats
+							? empty
+								? h(Text, {dimColor: true}, '没有任务')
+								: h(StatusCounts, {counts: stats, sep: '   '})
+							: h(Text, {dimColor: true}, loading ? '…' : ''),
 				),
 			);
 		}),
@@ -406,8 +395,8 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 	const frame = (...children) =>
 		h(Box, {flexDirection: 'column', width: columns - 1, paddingX: 2, paddingTop: 1}, ...children);
 	const brand = h(Text, {bold: true, color: 'red'}, 'HeyClaude');
-	const crumb = name => h(Text, null, h(Text, {dimColor: true}, 'HeyClaude › '), h(Text, {bold: true}, name));
-	const dimPath = path => h(Text, {dimColor: true, wrap: 'truncate-middle'}, path);
+	// 所有页面的左上角都是红色的 HeyClaude，进入下一级时在后面接“› 名字”
+	const crumb = name => h(Text, null, brand, h(Text, {dimColor: true}, ' › '), h(Text, {bold: true}, name));
 
 	const helpScreen = help ? h(HelpScreen, {title: '全部按键', sections: help, onClose: () => setHelp(null)}) : null;
 
@@ -418,7 +407,12 @@ export function App({layout, initialProjects, initialPath, initialMessage, initi
 			h(
 				Box,
 				{flexDirection: 'column', display: help ? 'none' : 'flex'},
-				layout === 'tabs' ? null : h(TopBar, {left: crumb(current.name), right: dimPath(current.path)}),
+				layout === 'tabs'
+					? null
+					: h(TopBar, {
+							left: crumb(current.name),
+							right: sessions ? h(StatusCounts, {counts: statsFor(sessions, current.path, confirmed)}) : null,
+					  }),
 				h(SessionsScreen, {
 				active: !help,
 				key: layout === 'tabs' ? 'tabs' : current.path,

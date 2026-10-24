@@ -31,42 +31,43 @@ hcc             # 默认：项目列表 → 项目里按状态分组的任务列
 hcc --tabs      # 一个界面里用标签切换项目和状态
 ```
 
-**默认布局**：先是项目列表，每个项目两行，只列不为零的状态。进入项目后，任务按状态分组，组之间用分隔线隔开。
+**默认布局**：先是项目列表，每个项目一行，只列不为零的状态。进入项目后，任务按状态分组，组之间空一行。两页用同一套样式：左上角是 HeyClaude，右上角是状态合计，每行是箭头、序号或图标、名字，后面紧跟数量或时间。界面上不显示项目目录。
 
 ```
-  HeyClaude                          4 个项目 · 3 进行中 · 1 需要输入 · 3 待确认 · 2 失败
+  HeyClaude                    4 个项目 · 3 进行中 · 1 需要输入 · 3 待确认 · 2 失败
 
-  ❯ 1. HeyAgent        1 进行中   1 需要输入   1 待确认   41 完成   2 失败
-       /home/me/Projects/HeyAgent
+  ❯ 1  HeyAgent        1 进行中   1 需要输入   1 待确认   41 完成   2 失败
+    2  HeyClaudecode   1 进行中   1 待确认   3 完成
+    3  my-api          目录不存在（按 d 移除）
 
-    2. HeyClaudecode   1 进行中   1 待确认   3 完成
-       /home/me/Projects/HeyClaudecode
+  Enter 进入    a 添加    d 删除    Ctrl+Z 退出    ? 全部按键
 
-  HeyClaude › HeyAgent                                       /home/me/Projects/HeyAgent
 
-  进行中 1 ──────────────────────────────────────────────
-    ◌  add-review-page                                        25 分钟前
+  HeyClaude › HeyAgent           1 进行中 · 1 需要输入 · 1 待确认 · 41 完成 · 2 失败
 
-  需要输入 1 ────────────────────────────────────────────
-  ❯ ●  deploy-config-fix                                       3 分钟前
+  1 进行中
+    ◌  add-review-page     25 分钟前
 
-  待确认 1 ──────────────────────────────────────────────
-    ◆  readme-refresh                                         12 分钟前
+  1 需要输入
+  ❯ ●  deploy-config-fix   3 分钟前
 
-  完成 41 · 最近 3 个 ───────────────────────────────────
-    ✓  sort-projects                                         昨天 14:02
-    ✓  number-projects                                         10月22日
-    ✓  v1-launcher                                             10月20日
+  1 待确认
+    ◆  readme-refresh      12 分钟前
+
+  41 完成 · 最近 3 个
+    ✓  sort-projects       昨天 14:02
+    ✓  number-projects     10月22日
+    ✓  v1-launcher         10月20日
        还有 38 个，按 h 展开
 
-  失败 2 ────────────────────────────────────────────────
-    ✗  migrate-db-schema                         出错          1 小时前
-    ✗  flaky-test-hunt                           已停止      昨天 18:20
+  2 失败
+    ✗  migrate-db-schema   出错  1 小时前
+    ✗  flaky-test-hunt     已停止  昨天 18:20
 
   Enter 打开    c 确认    n 新任务    Ctrl+Z 返回    ? 全部按键
 ```
 
-**`--tabs` 布局**：启动就是任务视图。第一行是项目，用 `←` `→` 切换；第二行是状态标签，用 `Tab` 切换，默认停在需要你处理的那一类；下面是任务，每个两行，第二行是状态细节、时间和所在的 worktree。
+**`--tabs` 布局**：启动就是任务视图。第一行是项目，用 `←` `→` 切换；第二行是状态标签，用 `Tab` 切换，默认停在需要你处理的那一类；下面是任务，每个两行，第二行是状态细节、时间，以及任务跑在哪个 worktree 里（就在项目目录里时不显示）。
 
 ```
   HeyClaude   EdgePredictfun   HeyAgent   HeyClaudecode   ← →
