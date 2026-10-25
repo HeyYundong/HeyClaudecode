@@ -235,6 +235,35 @@ pub fn save_reviews(confirmed: &Confirmed) -> Result<(), String> {
 	)
 }
 
+// 你改过的会话标题：{sessionId: 标题}。Claude Code 没有改名的公开命令，
+// 所以只在 HeyClaude 里显示，不写 Claude Code 的数据
+pub type Titles = BTreeMap<String, String>;
+
+#[derive(Serialize, Deserialize, Default)]
+struct TitlesFile {
+	#[serde(default)]
+	titles: Titles,
+}
+
+fn titles_file() -> PathBuf {
+	config_dir().join("titles.json")
+}
+
+pub fn load_titles() -> Result<Titles, String> {
+	let file = titles_file();
+	match fs::read_to_string(&file) {
+		Ok(text) => serde_json::from_str::<TitlesFile>(&text)
+			.map(|t| t.titles)
+			.map_err(|e| format!("无法读取 {}: {e}", file.display())),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Titles::new()),
+		Err(e) => Err(format!("无法读取 {}: {e}", file.display())),
+	}
+}
+
+pub fn save_titles(titles: &Titles) -> Result<(), String> {
+	write_json_atomic(&titles_file(), &TitlesFile { titles: titles.clone() })
+}
+
 pub fn now_iso() -> String {
 	chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }

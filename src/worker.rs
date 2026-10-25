@@ -118,12 +118,7 @@ pub fn dispatch_task(tx: Sender<Msg>, what: &'static str, cwd: String, prompt: S
 			}
 			Ok(out) => Ok(last_line(&out.stdout)),
 		};
-		let _ = tx.send(Msg::Dispatched {
-			what,
-			cwd,
-			prompt,
-			result,
-		});
+		let _ = tx.send(Msg::Dispatched { what, cwd, prompt, result });
 	});
 }
 

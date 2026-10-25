@@ -27,6 +27,9 @@ pub struct Session {
 	pub state: Option<String>,
 	#[serde(default)]
 	pub status: Option<String>,
+	// 你在 HeyClaude 里改过的标题（存在 titles.json），优先于 Claude Code 给的名字
+	#[serde(skip)]
+	pub title: Option<String>,
 }
 
 impl Session {
@@ -39,6 +42,9 @@ impl Session {
 	}
 
 	pub fn short_name(&self) -> &str {
+		if let Some(t) = self.title.as_deref().filter(|t| !t.is_empty()) {
+			return t;
+		}
 		match self.name.as_deref() {
 			Some(n) if !n.is_empty() => n,
 			_ if !self.id.is_empty() => &self.id,
@@ -344,6 +350,7 @@ mod tests {
 			name: Some(id.into()),
 			state: Some(state.into()),
 			status: None,
+			title: None,
 		}
 	}
 

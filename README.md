@@ -75,7 +75,7 @@ hcc --tabs      # 一个界面里用标签切换项目和状态
     ✗  migrate-db-schema   出错    1 小时前
     ✗  flaky-test-hunt     已停止  昨天 18:20
 
-  Enter 打开    c 确认    n 新任务    Ctrl+Z 返回    ? 全部按键
+  Enter 打开    c 确认    e 改名    n 新任务    Ctrl+Z 返回    ? 全部按键
 ```
 
 **`--tabs` 布局**：启动就是任务视图。第一行是项目，用 `←` `→` 切换；第二行是状态标签，用 `Tab` 切换，默认停在需要你处理的那一类；下面是任务，每个两行，第二行是状态细节、时间，以及任务跑在哪个 worktree 里（就在项目目录里时不显示）。
@@ -118,6 +118,7 @@ hcc --tabs      # 一个界面里用标签切换项目和状态
 | `c` | 确认选中的待确认任务，它变成完成；在完成的任务上按则取消确认 |
 | `C` | 确认这个项目下全部待确认任务（会先问 y/N） |
 | `u` | 撤销最近一次确认，可以连续撤销 |
+| `e` | 改标题：名字原地变成输入框，`Enter` 保存，`Ctrl+Z` / `Esc` 放弃。清空后保存就恢复 Claude Code 给的名字。只改 HeyClaude 里显示的名字 |
 | `n` | 新任务：输入要做的事，在项目目录里用 `claude --bg` 启动。`←` `→` 移动光标，`Home` `End`（`Ctrl+A` `Ctrl+E`）到行首行尾，太长会自动折行 |
 | `←` `→` | 切换项目（仅 `--tabs`） |
 | `Tab` / `Shift+Tab` | 切换状态标签（仅 `--tabs`） |
@@ -171,16 +172,26 @@ hcc --model opus --effort high
 }
 ```
 
+改过的会话标题保存在同一目录的 `titles.json`，按会话 ID 记录。Claude Code 没有改会话名的公开命令，所以这些标题只在 HeyClaude 里显示，`claude attach` 和 Claude Code 自己的列表里还是原来的名字。删掉某一行就恢复原名：
+
+```json
+{
+  "titles": {
+    "8c51dde5-8354-4d37-99e3-991c1e2da9ba": "修登录页的 bug"
+  }
+}
+```
+
 ## 代码结构
 
 Rust 写的，界面用 [ratatui](https://ratatui.rs)。`cargo test` 跑单元测试。
 
 - `src/main.rs`：入口。解析参数、设置终端；主循环是“处理按键和后台消息 → 重画 → 需要时打开会话，回来后回到任务列表”
 - `src/attach.rs`：在 HeyClaude 自己开的伪终端里运行 `claude attach`，按键和输出原样转发。claude 一离开它的界面（不用等进程退出，大约快半秒），HeyClaude 就拿回终端，之后按的键由 HeyClaude 处理
-- `src/input.rs`：新任务的输入框（光标移动、在光标处编辑、按显示宽度折行）
+- `src/input.rs`：新任务和改标题的输入框（光标移动、在光标处编辑、按显示宽度折行）
 - `src/app.rs`：界面状态、按键处理和绘制（项目列表、添加、删除确认、任务列表的两种布局、新任务、帮助页）
 - `src/worker.rs`：后台线程：调用 `claude agents` 刷新、监听任务状态文件、用 `claude --bg` 启动新任务
 - `src/sessions.rs`：解析 `claude agents --json`，给会话归类、分组并按项目统计
 - `src/transcripts.rs`：读对话记录末尾，判断确认之后有没有新对话
-- `src/store.rs`：projects.json 和 reviews.json 的读写、校验、排序，路径 Tab 补全
+- `src/store.rs`：projects.json、reviews.json 和 titles.json 的读写、校验、排序，路径 Tab 补全
 - `src/text.rs`：显示宽度、截断、时间格式、五种状态的图标和名字

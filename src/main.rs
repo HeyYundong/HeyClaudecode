@@ -181,7 +181,14 @@ fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Re
 			}
 			Some(Action::Trust(prompt)) => {
 				// 信任提示画在主屏幕上，先清掉，留一行说明
-				execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen, Clear(ClearType::All), MoveTo(0, 0), Show)?;
+				execute!(
+					io::stdout(),
+					DisableBracketedPaste,
+					LeaveAlternateScreen,
+					Clear(ClearType::All),
+					MoveTo(0, 0),
+					Show
+				)?;
 				painted_main = true;
 				print!("第一次用「对话」：Claude Code 要先确认信任 HeyClaude 准备的对话目录（空目录）。\r\n");
 				print!("选 Yes 后会自动回到 HeyClaude 并发出你的问题；选 No 就取消。\r\n\r\n");

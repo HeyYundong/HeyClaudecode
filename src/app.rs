@@ -11,7 +11,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::input::Input;
 use crate::sessions::{Counts, Groups, STATUS_ORDER, Session, Status, group_sessions, reactivated, stats_for, suggest_paths};
-use crate::store::{self, Confirmed, Project};
+use crate::store::{self, Confirmed, Project, Titles};
 use crate::text::{self, fit, info, name_column, pad_start, relative_time, truncate, where_in, width, with_suffix};
 use crate::worker::{self, Msg};
 
@@ -78,6 +78,8 @@ struct View {
 	undo: Vec<Vec<String>>,
 	// 从会话回来时，下次数据到了以后把光标放回这个任务上
 	restore_id: Option<String>,
+	// 正在改标题的会话 ID 和输入框
+	editing: Option<(String, Input)>,
 }
 
 // 可以选中的行，按显示顺序：任务，以及超过 RECENT 个的分组末尾的折叠行
@@ -112,6 +114,7 @@ pub struct App {
 	help: Option<(&'static str, Vec<HelpSection>)>,
 	back_at: Option<Instant>,
 	confirmed: Confirmed,
+	titles: Titles,
 	view: View,
 	digits: String,
 	digit_due: Option<Instant>,
@@ -288,6 +291,7 @@ fn session_help(layout: Layout, chat: bool) -> Vec<HelpSection> {
 			("c", "确认待确认的任务，它变成完成；在完成的任务上按则取消确认".into()),
 			("C", "确认这个项目下全部待确认任务".into()),
 			("u", "撤销最近一次确认".into()),
+			("e", "改标题：Enter 保存，清空后保存恢复原名（只改 HeyClaude 里显示的名字）".into()),
 			(
 				"n",
 				if chat {
@@ -311,10 +315,11 @@ fn session_help(layout: Layout, chat: bool) -> Vec<HelpSection> {
 	sections
 }
 
-fn session_keys(layout: Layout, chat: bool) -> [(&'static str, &'static str); 5] {
+fn session_keys(layout: Layout, chat: bool) -> [(&'static str, &'static str); 6] {
 	[
 		("Enter", "打开"),
 		("c", "确认"),
+		("e", "改名"),
 		("n", if chat { "新对话" } else { "新任务" }),
 		("Ctrl+Z", if layout == Layout::Tabs { "项目列表" } else { "返回" }),
 		("?", "全部按键"),
@@ -363,10 +368,14 @@ fn window_start(cursor: usize, visible: usize, total: usize) -> usize {
 
 impl App {
 	pub fn new(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>, fetch_tx: Sender<Confirmed>, msg_tx: Sender<Msg>) -> App {
-		let (confirmed, message) = match store::load_reviews() {
+		let (confirmed, mut message) = match store::load_reviews() {
 			Ok(c) => (c, None),
 			Err(e) => (Confirmed::new(), Some((e, Color::Red))),
 		};
+		let titles = store::load_titles().unwrap_or_else(|e| {
+			message = Some((e, Color::Red));
+			Titles::new()
+		});
 		// 「对话」总在列表里，tabs 布局总能直接进任务视图；有项目时先停在第一个项目上
 		let (screen, cursor) = match layout {
 			Layout::Tabs => (Screen::Sessions, usize::from(!projects.is_empty())),
@@ -387,6 +396,7 @@ impl App {
 			help: None,
 			back_at: None,
 			confirmed,
+			titles,
 			view: View::default(),
 			digits: String::new(),
 			digit_due: None,
@@ -474,6 +484,46 @@ impl App {
 		true
 	}
 
+	// 把改过的标题套到会话上；每次读到新数据都要重新套一遍
+	fn apply_titles(&mut self) {
+		for s in self.sessions.iter_mut().flatten() {
+			s.title = self.titles.get(&s.session_id).cloned();
+		}
+	}
+
+	// 保存新标题。清空，或者改回 Claude Code 给的名字，就删掉这条记录
+	fn rename(&mut self, id: &str, text: String) {
+		let Some(session) = self.sessions.iter().flatten().find(|s| s.session_id == id) else {
+			return;
+		};
+		let original = Session {
+			title: None,
+			..session.clone()
+		}
+		.short_name()
+		.to_string();
+		let restore = text.is_empty() || text == original;
+		let mut next = self.titles.clone();
+		if restore {
+			next.remove(id);
+		} else {
+			next.insert(id.to_string(), text.clone());
+		}
+		if next == self.titles {
+			return;
+		}
+		if let Err(e) = store::save_titles(&next) {
+			return self.set_message(format!("保存标题失败：{e}"), Color::Red);
+		}
+		self.titles = next;
+		self.apply_titles();
+		if restore {
+			self.set_message(format!("已恢复原名 {original}"), Color::Green);
+		} else {
+			self.set_message(format!("已改名为 {text}"), Color::Green);
+		}
+	}
+
 	fn persist(&mut self, next: Vec<Project>) -> bool {
 		let chat = &self.projects[CHAT].path;
 		let next: Vec<Project> = next.into_iter().filter(|p| &p.path != chat).collect();
@@ -506,6 +556,7 @@ impl App {
 							self.save_confirmed(next);
 						}
 						self.sessions = Some(sessions);
+						self.apply_titles();
 						self.missing = self
 							.projects
 							.iter()
@@ -536,11 +587,7 @@ impl App {
 				}
 				self.set_message(format!("启动失败：{e}"), Color::Red)
 			}
-			Msg::Dispatched {
-				what,
-				result: Ok(out),
-				..
-			} => {
+			Msg::Dispatched { what, result: Ok(out), .. } => {
 				self.trust_tried = false;
 				self.set_message(format!("已启动{what} {out}"), Color::Green);
 				self.refresh();
@@ -701,6 +748,11 @@ impl App {
 				add_edit(add, next);
 			}
 			Screen::NewTask { input, .. } => input.insert(&text),
+			Screen::Sessions => {
+				if let Some((_, input)) = &mut self.view.editing {
+					input.insert(&text);
+				}
+			}
 			_ => {}
 		}
 	}
@@ -855,7 +907,9 @@ impl App {
 
 	fn new_task_key(&mut self, key: KeyEvent) {
 		let chat = self.in_chat();
-		let Screen::NewTask { input, from_list } = &mut self.screen else { return };
+		let Screen::NewTask { input, from_list } = &mut self.screen else {
+			return;
+		};
 		let back = if *from_list { Screen::List } else { Screen::Sessions };
 		if is_back(&key) {
 			self.go_back();
@@ -898,6 +952,19 @@ impl App {
 
 	fn sessions_key(&mut self, key: KeyEvent) {
 		let project = self.current().cloned().expect("sessions screen has a project");
+		// 改标题时按键都给输入框：Enter 保存，Ctrl+Z / Esc 放弃
+		if let Some((id, input)) = &mut self.view.editing {
+			if is_back(&key) {
+				self.view.editing = None;
+			} else if key.code == KeyCode::Enter {
+				let (id, text) = (id.clone(), input.value().trim().to_string());
+				self.view.editing = None;
+				self.rename(&id, text);
+			} else {
+				input.key(&key);
+			}
+			return;
+		}
 		let Some((groups, list, tab)) = self.session_items() else {
 			// 还没有数据时只能返回、刷新、看帮助
 			self.message = None;
@@ -1004,6 +1071,8 @@ impl App {
 				}
 			} else if ch == Some('c') {
 				self.set_message("先按 Enter 展开，再选中要确认的任务", Color::Yellow);
+			} else if ch == Some('e') {
+				self.set_message("先按 Enter 展开，再选中要改标题的任务", Color::Yellow);
 			}
 			return;
 		}
@@ -1011,6 +1080,12 @@ impl App {
 			return;
 		};
 		let name = session.short_name().to_string();
+		if ch == Some('e') {
+			let mut input = Input::default();
+			input.insert(&name);
+			self.view.editing = Some((id, input));
+			return;
+		}
 		if is_open(&key) {
 			if !session.is_background() {
 				return self.set_message("这是交互会话，请在它自己的终端里操作", Color::Yellow);
@@ -1088,7 +1163,10 @@ impl App {
 				lines.push(Line::from(span(about, dim())));
 				lines.push(Line::default());
 				lines.extend(input.lines(span("❯ ", red()), placeholder, inner));
-				lines.extend(key_hints(&[("Enter", start), ("← →", "移动光标"), ("Ctrl+U", "清空"), ("Ctrl+Z", "取消")], &None));
+				lines.extend(key_hints(
+					&[("Enter", start), ("← →", "移动光标"), ("Ctrl+U", "清空"), ("Ctrl+Z", "取消")],
+					&None,
+				));
 				lines
 			}
 			Screen::Add(add) => self.add_lines(add, inner),
@@ -1264,8 +1342,27 @@ impl App {
 			let text = format!("确认 {} 下全部 {} 个待确认任务？(y/N)", project.name, groups.pending.len());
 			lines.push(Line::from(span(text, Style::default().fg(Color::Yellow))));
 		}
-		lines.extend(key_hints(&session_keys(self.layout, self.in_chat()), &self.message));
+		if self.view.editing.is_some() {
+			let keys = [
+				("Enter", "保存"),
+				("← →", "移动光标"),
+				("Ctrl+U", "清空（保存后恢复原名）"),
+				("Ctrl+Z", "取消"),
+			];
+			lines.extend(key_hints(&keys, &self.message));
+		} else {
+			lines.extend(key_hints(&session_keys(self.layout, self.in_chat()), &self.message));
+		}
 		lines
+	}
+
+	// 正在改标题的会话：返回它的输入框
+	fn editing(&self, s: &Session) -> Option<&Input> {
+		self.view
+			.editing
+			.as_ref()
+			.filter(|(id, _)| *id == s.session_id)
+			.map(|(_, input)| input)
 	}
 
 	fn fold_line(group_open: bool, hidden: usize, selected: bool) -> Line<'static> {
@@ -1282,7 +1379,7 @@ impl App {
 	}
 
 	// 默认布局：按状态分组，组之间空一行
-	fn grouped_body(&self, groups: &Groups, columns: usize, rows: usize, _inner: usize) -> Vec<Line<'static>> {
+	fn grouped_body(&self, groups: &Groups, columns: usize, rows: usize, inner: usize) -> Vec<Line<'static>> {
 		let list = items(groups, &STATUS_ORDER, &self.view.expanded);
 		let cursor = self.view.cursor.min(list.len().saturating_sub(1));
 		let names: Vec<String> = list
@@ -1327,8 +1424,12 @@ impl App {
 			out.push((Line::from(header), None));
 			while index < list.len() && list[index].group() == g {
 				let selected = index == cursor;
-				let line = match &list[index] {
-					Item::Fold { open, hidden, .. } => Self::fold_line(*open, *hidden, selected),
+				let lines = match &list[index] {
+					Item::Fold { open, hidden, .. } => vec![Self::fold_line(*open, *hidden, selected)],
+					Item::Session(s, _) if let Some(input) = self.editing(s) => {
+						let prefix = vec![span("❯ ", red()), span(format!("{}  ", info(g).icon), status_style(g))];
+						edit_lines(input, prefix, inner)
+					}
 					Item::Session(s, _) => {
 						let dimmed = g == Status::Confirmed;
 						let mut name_style = Style::default();
@@ -1354,10 +1455,13 @@ impl App {
 							));
 						}
 						row.push(span(relative_time(s.started(), now), dim()));
-						Line::from(row)
+						vec![Line::from(row)]
 					}
 				};
-				out.push((line, Some(index)));
+				// 折成多行时只有第一行记序号，光标窗口按第一行算
+				for (i, line) in lines.into_iter().enumerate() {
+					out.push((line, (i == 0).then_some(index)));
+				}
 				index += 1;
 			}
 		}
@@ -1399,7 +1503,11 @@ impl App {
 			} else {
 				dim()
 			};
-			let name = if i == CHAT { format!("{CHAT_ICON} {}", p.name) } else { p.name.clone() };
+			let name = if i == CHAT {
+				format!("{CHAT_ICON} {}", p.name)
+			} else {
+				p.name.clone()
+			};
 			project_items.push(span(name, style));
 		}
 		project_items.push(span("← →", dim()));
@@ -1449,11 +1557,17 @@ impl App {
 					if dimmed && !selected {
 						style = style.add_modifier(Modifier::DIM);
 					}
-					lines.push(Line::from(vec![
+					let prefix = vec![
 						span(if selected { "❯ " } else { "  " }, red()),
 						span(format!("{}  ", info(*g).icon), status_style(*g)),
-						span(truncate(&s.display_name(), inner.saturating_sub(5)), style),
-					]));
+					];
+					if let Some(input) = self.editing(s) {
+						lines.extend(edit_lines(input, prefix, inner));
+					} else {
+						let mut row = prefix;
+						row.push(span(truncate(&s.display_name(), inner.saturating_sub(5)), style));
+						lines.push(Line::from(row));
+					}
 					let when = match (g, self.confirmed.get(&s.session_id)) {
 						(Status::Confirmed, Some(at)) => {
 							let t = chrono::DateTime::parse_from_rfc3339(at)
@@ -1486,6 +1600,14 @@ impl App {
 		}
 		lines
 	}
+}
+
+// 改标题的输入框画在原来名字的位置上：前面是光标和状态图标，太长时折行，续行对齐到名字那一列
+fn edit_lines(input: &Input, prefix: Vec<Span<'static>>, inner: usize) -> Vec<Line<'static>> {
+	let indent: usize = prefix.iter().map(|s| width(&s.content)).sum();
+	let mut lines = input.lines(span(" ".repeat(indent), Style::default()), "", inner);
+	lines[0].spans.splice(0..1, prefix);
+	lines
 }
 
 fn add_edit(add: &mut AddState, next: String) {
@@ -1532,6 +1654,7 @@ mod tests {
 				name: Some(format!("s{i}")),
 				state: Some(state.into()),
 				status: None,
+				title: None,
 			})
 			.collect()
 	}
@@ -1576,6 +1699,22 @@ mod tests {
 		assert_eq!(window_start(7, 5, 20), 3);
 		assert_eq!(window_start(19, 5, 20), 15);
 		assert_eq!(window_start(3, 10, 4), 0);
+	}
+
+	#[test]
+	fn edit_box_replaces_name() {
+		let mut input = Input::default();
+		input.insert("新标题");
+		let prefix = vec![span("❯ ", red()), span("◆  ", Style::default())];
+		let lines = edit_lines(&input, prefix, 40);
+		let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+		assert_eq!(text, "❯ ◆  新标题 ");
+		let s = Session {
+			name: Some("old".into()),
+			title: Some("新标题".into()),
+			..Default::default()
+		};
+		assert_eq!(s.display_name(), "新标题（交互）");
 	}
 
 	#[test]
