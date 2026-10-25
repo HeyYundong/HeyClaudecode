@@ -617,6 +617,14 @@ impl App {
 		}
 	}
 
+	// 刚从会话回来、新数据还没到时就移动了光标：数据到了以后放回你选的任务上，
+	// 而不是跳回刚才打开的那个
+	fn follow_cursor(&mut self, list: &[(String, Status)]) {
+		if self.view.restore_id.is_some() {
+			self.view.restore_id = list.get(self.view.cursor).map(|(id, _)| id.clone()).filter(|id| !id.is_empty());
+		}
+	}
+
 	fn groups(&self) -> Option<Groups> {
 		let project = self.current()?;
 		Some(group_sessions(self.sessions.as_deref()?, &project.path, &self.confirmed))
@@ -929,13 +937,14 @@ impl App {
 		}
 		if is_up(&key) {
 			self.view.cursor = clamp(self.view.cursor).saturating_sub(1);
-			return;
+			return self.follow_cursor(&list);
 		}
 		if is_down(&key) {
 			self.view.cursor = clamp(self.view.cursor + 1);
-			return;
+			return self.follow_cursor(&list);
 		}
 		if tabs && matches!(key.code, KeyCode::Left | KeyCode::Right) {
+			self.view.restore_id = None;
 			self.view.cursor = 0;
 			let n = self.projects.len();
 			self.cursor = if key.code == KeyCode::Left {
@@ -949,6 +958,7 @@ impl App {
 			let i = STATUS_ORDER.iter().position(|&s| s == tab).unwrap_or(0);
 			let step = if key.code == KeyCode::BackTab { STATUS_ORDER.len() - 1 } else { 1 };
 			self.view.tab_choice = Some(STATUS_ORDER[(i + step) % STATUS_ORDER.len()]);
+			self.view.restore_id = None;
 			self.view.cursor = 0;
 			return;
 		}
@@ -985,6 +995,7 @@ impl App {
 		if id.is_empty() {
 			// 折叠行：展开或收起一组。收起时光标回到折叠行；展开时光标留在原位，正好落在第一个新露出来的任务上
 			if is_open(&key) {
+				self.view.restore_id = None;
 				if self.view.expanded.remove(&group) {
 					let first = list.iter().position(|(_, g)| *g == group).unwrap_or(0);
 					self.view.cursor = first + RECENT;
