@@ -1,4 +1,5 @@
 mod app;
+mod attach;
 mod sessions;
 mod store;
 mod text;
@@ -6,7 +7,7 @@ mod transcripts;
 mod worker;
 
 use std::io::{self, IsTerminal, Write};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
@@ -56,14 +57,10 @@ extern "C" fn ignore_signal(_: libc::c_int) {}
 
 // 装一个什么也不做的处理函数，而不是 SIG_IGN：处理函数在 exec 时会恢复成默认，
 // 这样 claude 子进程收到的信号行为不受影响
-fn set_signal(signal: libc::c_int, ignore: bool) {
+fn ignore(signal: libc::c_int) {
 	unsafe {
 		let mut action: libc::sigaction = std::mem::zeroed();
-		action.sa_sigaction = if ignore {
-			ignore_signal as *const () as usize
-		} else {
-			libc::SIG_DFL
-		};
+		action.sa_sigaction = ignore_signal as *const () as usize;
 		libc::sigemptyset(&mut action.sa_mask);
 		libc::sigaction(signal, &action, std::ptr::null_mut());
 	}
@@ -86,10 +83,7 @@ fn leave_screen() {
 }
 
 fn attach(project: &Project, session: &Session) -> Option<(String, Color)> {
-	// 子进程和我们在同一个进程组，Ctrl+C 只应该交给 claude 处理。
-	// 终端保持原始模式：claude 接管终端之前按的 Ctrl+Z / Ctrl+C 只是普通按键，
-	// 不会变成信号把 claude 暂停（暂停的 claude 和等它退出的我们会互相卡住）
-	set_signal(libc::SIGINT, true);
+	// 终端保持原始模式，按键原样转给 claude
 	let _ = enable_raw_mode();
 	// claude attach 用短 ID 打开后台会话；在会话自己的目录里运行（可能是 worktree）
 	let cwd = if store::dir_exists(session.cwd()) {
@@ -97,12 +91,12 @@ fn attach(project: &Project, session: &Session) -> Option<(String, Color)> {
 	} else {
 		&project.path
 	};
-	let result = Command::new("claude").args(["attach", &session.id]).current_dir(cwd).status();
-	let _ = enable_raw_mode();
 	let name = session.short_name();
-	let message = match result {
-		Err(e) => Some((format!("无法启动 claude：{e}"), Color::Red)),
-		Ok(status) if !status.success() => {
+	match attach::run(cwd, &session.id) {
+		attach::Outcome::Detached => None,
+		attach::Outcome::Exited(status) if status.success() => None,
+		attach::Outcome::Failed(e) => Some((format!("无法启动 claude：{e}"), Color::Red)),
+		attach::Outcome::Exited(status) => {
 			let code = status.code().unwrap_or(-1);
 			// 会话打不开时 claude 会打印原因然后退出，停一下让人看清
 			print!("\r\n\x1b[33m会话 {name} 打不开（退出码 {code}），按回车返回 HeyClaude\x1b[0m");
@@ -114,10 +108,7 @@ fn attach(project: &Project, session: &Session) -> Option<(String, Color)> {
 			}
 			Some((format!("会话 {name} 打不开（claude attach 退出码 {code}）"), Color::Yellow))
 		}
-		Ok(_) => None,
-	};
-	set_signal(libc::SIGINT, false);
-	message
+	}
 }
 
 fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Result<()> {
@@ -170,7 +161,13 @@ fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Re
 				// 先把状态准备好（会读 projects.json），再切回备用屏幕并立刻画出来
 				app.returned(&project.path, &session.session_id, message);
 				enable_raw_mode()?;
-				queue!(io::stdout(), BeginSynchronizedUpdate, EnterAlternateScreen, EnableBracketedPaste, Hide)?;
+				queue!(
+					io::stdout(),
+					BeginSynchronizedUpdate,
+					EnterAlternateScreen,
+					EnableBracketedPaste,
+					Hide
+				)?;
 				terminal.clear()?;
 				terminal.draw(|f| app.draw(f))?;
 				io::stdout().queue(EndSynchronizedUpdate)?.flush()?;
@@ -219,7 +216,7 @@ fn main() -> ExitCode {
 
 	// HeyClaude 自己不响应 Ctrl+Z 的暂停信号：界面里 Ctrl+Z 是“返回上一级”，
 	// 交接终端的空档里多按的 Ctrl+Z 也不能把我们挂起
-	set_signal(libc::SIGTSTP, true);
+	ignore(libc::SIGTSTP);
 	let default_hook = std::panic::take_hook();
 	std::panic::set_hook(Box::new(move |info| {
 		leave_screen();

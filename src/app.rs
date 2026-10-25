@@ -18,10 +18,9 @@ use crate::worker::{self, Msg};
 pub const RECENT: usize = 5;
 // 多位序号：两次数字键间隔超过这个时间就按已输入的序号进入
 const DIGIT_WAIT: Duration = Duration::from_millis(600);
-// 连按 Ctrl+Z 时，每隔这么久才退一级，免得一路退出 HeyClaude
-const BACK_GAP: Duration = Duration::from_millis(400);
-// 从会话回来后，这段时间内的 Ctrl+Z 是离开会话时多按的，忽略
-const RETURN_QUIET: Duration = Duration::from_millis(600);
+// 返回上一级总是立刻生效，连按两下 Ctrl+Z 就能从会话回到项目列表。
+// 只有“在项目列表里按 Ctrl+Z 退出”要和上一次返回隔开这么久，免得连按时一路退出 HeyClaude
+const QUIT_GAP: Duration = Duration::from_millis(500);
 // 任务状态文件变化后等一会儿再刷新，把一串变化合并成一次
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(300);
 // 两次刷新之间至少隔这么久
@@ -289,7 +288,7 @@ fn session_help(layout: Layout) -> Vec<HelpSection> {
 	let back = if layout == Layout::Tabs {
 		"回到项目列表"
 	} else {
-		"回到项目列表（连按时每 0.4 秒只退一级）"
+		"回到项目列表（连按两下就从会话回到项目列表）"
 	};
 	sections.push(("返回", vec![("Ctrl+Z / Esc", back.into())]));
 	sections
@@ -410,14 +409,17 @@ impl App {
 		self.message = Some((text.into(), color));
 	}
 
-	// 返回上一级（Ctrl+Z / Esc）都经过这里：间隔太短的重复按键忽略
-	fn go_back(&mut self) -> bool {
-		let now = Instant::now();
-		if self.back_at.is_some_and(|at| now < at + BACK_GAP) {
-			return false;
-		}
-		self.back_at = Some(now);
-		true
+	// 返回上一级（Ctrl+Z / Esc）都经过这里，记下时间
+	fn go_back(&mut self) {
+		self.back_at = Some(Instant::now());
+	}
+
+	// 在项目列表里按 Ctrl+Z / Esc 退出：刚返回过（包括刚从会话回来）就不退，
+	// 这一下算作连按里多出来的。按住不放时也一直不退
+	fn may_quit(&mut self) -> bool {
+		let quit = self.back_at.is_none_or(|at| Instant::now() >= at + QUIT_GAP);
+		self.go_back();
+		quit
 	}
 
 	pub fn refresh(&mut self) {
@@ -532,7 +534,7 @@ impl App {
 		if let Some(m) = message {
 			self.message = Some(m);
 		}
-		self.back_at = Some(Instant::now() + RETURN_QUIET - BACK_GAP);
+		self.go_back();
 		self.refresh();
 	}
 
@@ -656,7 +658,7 @@ impl App {
 		if ch == Some('q') {
 			self.action = Some(Action::Quit);
 		} else if is_back(&key) {
-			if self.go_back() {
+			if self.may_quit() {
 				self.action = Some(Action::Quit);
 			}
 		} else if is_up(&key) {
@@ -711,9 +713,8 @@ impl App {
 		let suggestions = self.suggestions(&add.value);
 		let (value, selected) = (add.value.clone(), add.selected);
 		if is_back(&key) {
-			if self.go_back() {
-				self.screen = Screen::List;
-			}
+			self.go_back();
+			self.screen = Screen::List;
 			return;
 		}
 		if key.code == KeyCode::Enter {
@@ -767,18 +768,16 @@ impl App {
 	fn new_task_key(&mut self, key: KeyEvent) {
 		let Screen::NewTask(value) = &mut self.screen else { return };
 		if is_back(&key) {
-			if self.go_back() {
-				self.screen = Screen::Sessions;
-			}
+			self.go_back();
+			self.screen = Screen::Sessions;
 			return;
 		}
 		match key.code {
 			KeyCode::Enter => {
 				let text = value.trim().to_string();
 				if text.is_empty() {
-					if self.go_back() {
-						self.screen = Screen::Sessions;
-					}
+					self.go_back();
+					self.screen = Screen::Sessions;
 					return;
 				}
 				self.screen = Screen::Sessions;
@@ -813,9 +812,8 @@ impl App {
 			// 还没有数据时只能返回、刷新、看帮助
 			self.message = None;
 			if is_back(&key) {
-				if self.go_back() {
-					self.screen = Screen::List;
-				}
+				self.go_back();
+				self.screen = Screen::List;
 			} else if plain_char(&key) == Some('r') {
 				self.refresh();
 			} else if plain_char(&key) == Some('?') {
@@ -839,9 +837,8 @@ impl App {
 		self.message = None;
 		let clamp = |i: usize| i.min(list.len().saturating_sub(1));
 		if is_back(&key) {
-			if self.go_back() {
-				self.screen = Screen::List;
-			}
+			self.go_back();
+			self.screen = Screen::List;
 			return;
 		}
 		if ch == Some('?') {
