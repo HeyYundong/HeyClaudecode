@@ -113,7 +113,7 @@ hcc --tabs      # 一个界面里用标签切换项目和状态
 | `c` | 确认选中的待确认任务，它变成完成；在完成的任务上按则取消确认 |
 | `C` | 确认这个项目下全部待确认任务（会先问 y/N） |
 | `u` | 撤销最近一次确认，可以连续撤销 |
-| `n` | 新任务：输入要做的事，在项目目录里用 `claude --bg` 启动 |
+| `n` | 新任务：输入要做的事，在项目目录里用 `claude --bg` 启动。`←` `→` 移动光标，`Home` `End`（`Ctrl+A` `Ctrl+E`）到行首行尾，太长会自动折行 |
 | `←` `→` | 切换项目（仅 `--tabs`） |
 | `Tab` / `Shift+Tab` | 切换状态标签（仅 `--tabs`） |
 | `r` | 刷新 |
@@ -170,6 +170,7 @@ Rust 写的，界面用 [ratatui](https://ratatui.rs)。`cargo test` 跑单元�
 
 - `src/main.rs`：入口。解析参数、设置终端；主循环是“处理按键和后台消息 → 重画 → 需要时打开会话，回来后回到任务列表”
 - `src/attach.rs`：在 HeyClaude 自己开的伪终端里运行 `claude attach`，按键和输出原样转发。claude 一离开它的界面（不用等进程退出，大约快半秒），HeyClaude 就拿回终端，之后按的键由 HeyClaude 处理
+- `src/input.rs`：新任务的输入框（光标移动、在光标处编辑、按显示宽度折行）
 - `src/app.rs`：界面状态、按键处理和绘制（项目列表、添加、删除确认、任务列表的两种布局、新任务、帮助页）
 - `src/worker.rs`：后台线程：调用 `claude agents` 刷新、监听任务状态文件、用 `claude --bg` 启动新任务
 - `src/sessions.rs`：解析 `claude agents --json`，给会话归类、分组并按项目统计

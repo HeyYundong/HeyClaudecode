@@ -1,5 +1,6 @@
 mod app;
 mod attach;
+mod input;
 mod sessions;
 mod store;
 mod text;

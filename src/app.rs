@@ -9,6 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::input::Input;
 use crate::sessions::{Counts, Groups, STATUS_ORDER, Session, Status, group_sessions, reactivated, stats_for, suggest_paths};
 use crate::store::{self, Confirmed, Project};
 use crate::text::{self, fit, info, name_column, pad_start, relative_time, truncate, where_in, width, with_suffix};
@@ -56,7 +57,7 @@ enum Screen {
 	Add(AddState),
 	Delete,
 	Sessions,
-	NewTask(String),
+	NewTask(Input),
 }
 
 // 任务列表的状态：标签、展开的分组、光标、撤销栈
@@ -622,7 +623,7 @@ impl App {
 				let next = format!("{}{text}", add.value);
 				add_edit(add, next);
 			}
-			Screen::NewTask(value) => value.push_str(&text),
+			Screen::NewTask(input) => input.insert(&text),
 			_ => {}
 		}
 	}
@@ -766,7 +767,7 @@ impl App {
 	}
 
 	fn new_task_key(&mut self, key: KeyEvent) {
-		let Screen::NewTask(value) = &mut self.screen else { return };
+		let Screen::NewTask(input) = &mut self.screen else { return };
 		if is_back(&key) {
 			self.go_back();
 			self.screen = Screen::Sessions;
@@ -774,7 +775,7 @@ impl App {
 		}
 		match key.code {
 			KeyCode::Enter => {
-				let text = value.trim().to_string();
+				let text = input.value().trim().to_string();
 				if text.is_empty() {
 					self.go_back();
 					self.screen = Screen::Sessions;
@@ -785,14 +786,8 @@ impl App {
 				self.set_message(format!("正在 {} 里启动新任务…", project.name), Color::Yellow);
 				worker::dispatch_task(self.msg_tx.clone(), project.path, text, self.forwarded.clone());
 			}
-			KeyCode::Backspace | KeyCode::Delete => {
-				value.pop();
-			}
-			_ if is_ctrl(&key, 'u') => value.clear(),
 			_ => {
-				if let Some(c) = plain_char(&key).filter(|c| !c.is_control()) {
-					value.push(c);
-				}
+				input.key(&key);
 			}
 		}
 	}
@@ -873,7 +868,7 @@ impl App {
 		match ch {
 			Some('r') => return self.refresh(),
 			Some('n') => {
-				self.screen = Screen::NewTask(String::new());
+				self.screen = Screen::NewTask(Input::default());
 				return;
 			}
 			Some('u') => {
@@ -970,7 +965,7 @@ impl App {
 		}
 		match &self.screen {
 			Screen::Sessions if self.current().is_some() => self.sessions_lines(columns, rows, inner),
-			Screen::NewTask(value) if self.current().is_some() => {
+			Screen::NewTask(input) if self.current().is_some() => {
 				let project = self.current().unwrap();
 				let mut lines = top_bar(Self::crumb(&format!("{} › 新任务", project.name)), vec![], inner);
 				lines.push(Line::from(span(
@@ -978,15 +973,8 @@ impl App {
 					dim(),
 				)));
 				lines.push(Line::default());
-				let mut input = vec![span("❯ ", red())];
-				input.push(if value.is_empty() {
-					span("要 Claude 做什么？", dim())
-				} else {
-					span(value.clone(), Style::default())
-				});
-				input.push(span(" ", Style::default().add_modifier(Modifier::REVERSED)));
-				lines.push(Line::from(input));
-				lines.extend(key_hints(&[("Enter", "启动"), ("Ctrl+U", "清空"), ("Ctrl+Z", "取消")], &None));
+				lines.extend(input.lines(span("❯ ", red()), "要 Claude 做什么？", inner));
+				lines.extend(key_hints(&[("Enter", "启动"), ("← →", "移动光标"), ("Ctrl+U", "清空"), ("Ctrl+Z", "取消")], &None));
 				lines
 			}
 			Screen::Add(add) => self.add_lines(add, inner),
