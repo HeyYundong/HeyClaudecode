@@ -82,7 +82,6 @@ fn leave_screen() {
 }
 
 fn attach(project: &Project, session: &Session) -> Option<(String, Color)> {
-	leave_screen();
 	// 子进程和我们在同一个进程组，Ctrl+C 只应该交给 claude 处理。
 	// 终端保持原始模式：claude 接管终端之前按的 Ctrl+Z / Ctrl+C 只是普通按键，
 	// 不会变成信号把 claude 暂停（暂停的 claude 和等它退出的我们会互相卡住）
@@ -127,6 +126,8 @@ fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Re
 	let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 	terminal.clear()?;
 	let mut dirty = true;
+	// 交接给 claude attach 时在主屏幕上画过界面，退出时要擦掉
+	let mut painted_main = false;
 	loop {
 		if dirty {
 			terminal.draw(|f| app.draw(f))?;
@@ -151,6 +152,13 @@ fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Re
 			None => {}
 			Some(Action::Quit) => break,
 			Some(Action::Attach(project, session)) => {
+				// claude 退出时先离开它自己的备用屏幕，进程要再过半秒左右才结束。
+				// 这段空档露出的是主屏幕，所以先把当前界面也画到主屏幕上，免得闪回 shell
+				leave_screen();
+				terminal.clear()?;
+				terminal.draw(|f| app.draw(f))?;
+				execute!(io::stdout(), Show)?;
+				painted_main = true;
 				let message = attach(&project, &session);
 				enter_screen()?;
 				terminal.clear()?;
@@ -160,6 +168,10 @@ fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Re
 		}
 	}
 	leave_screen();
+	if painted_main {
+		// 主屏幕上留着交接时画的界面，退出时擦掉
+		execute!(io::stdout(), Clear(ClearType::All), MoveTo(0, 0))?;
+	}
 	disable_raw_mode()
 }
 
