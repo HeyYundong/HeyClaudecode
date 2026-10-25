@@ -15,7 +15,11 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::{Hide, MoveTo, Show};
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode};
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
+use ratatui::crossterm::terminal::{
+	BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+	enable_raw_mode,
+};
+use ratatui::crossterm::{QueueableCommand, queue};
 use ratatui::style::Color;
 
 use app::{Action, App, Layout};
@@ -130,7 +134,9 @@ fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Re
 	let mut painted_main = false;
 	loop {
 		if dirty {
+			io::stdout().queue(BeginSynchronizedUpdate)?;
 			terminal.draw(|f| app.draw(f))?;
+			io::stdout().queue(EndSynchronizedUpdate)?.flush()?;
 			dirty = false;
 		}
 		// 一次把排队的按键都处理完再画，按住方向键时不会一帧一帧地追
@@ -154,16 +160,21 @@ fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Re
 			Some(Action::Attach(project, session)) => {
 				// claude 退出时先离开它自己的备用屏幕，进程要再过半秒左右才结束。
 				// 这段空档露出的是主屏幕，所以先把当前界面也画到主屏幕上，免得闪回 shell
-				leave_screen();
+				// 切屏、清屏和重画包在一次同步更新里，终端一次显示完，不会闪出空白或 shell
+				queue!(io::stdout(), BeginSynchronizedUpdate, DisableBracketedPaste, LeaveAlternateScreen)?;
 				terminal.clear()?;
 				terminal.draw(|f| app.draw(f))?;
-				execute!(io::stdout(), Show)?;
+				execute!(io::stdout(), Show, EndSynchronizedUpdate)?;
 				painted_main = true;
 				let message = attach(&project, &session);
-				enter_screen()?;
-				terminal.clear()?;
+				// 先把状态准备好（会读 projects.json），再切回备用屏幕并立刻画出来
 				app.returned(&project.path, &session.session_id, message);
-				dirty = true;
+				enable_raw_mode()?;
+				queue!(io::stdout(), BeginSynchronizedUpdate, EnterAlternateScreen, EnableBracketedPaste, Hide)?;
+				terminal.clear()?;
+				terminal.draw(|f| app.draw(f))?;
+				io::stdout().queue(EndSynchronizedUpdate)?.flush()?;
+				dirty = false;
 			}
 		}
 	}
