@@ -83,6 +83,21 @@ fn leave_screen() {
 	let _ = execute!(io::stdout(), DisableBracketedPaste, Show, LeaveAlternateScreen);
 }
 
+// 从 claude 那里拿回终端：切回备用屏幕并立刻画出来
+fn take_back(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &App) -> io::Result<()> {
+	enable_raw_mode()?;
+	queue!(
+		io::stdout(),
+		BeginSynchronizedUpdate,
+		EnterAlternateScreen,
+		EnableBracketedPaste,
+		Hide
+	)?;
+	terminal.clear()?;
+	terminal.draw(|f| app.draw(f))?;
+	io::stdout().queue(EndSynchronizedUpdate)?.flush()
+}
+
 fn attach(project: &Project, session: &Session) -> Option<(String, Color)> {
 	// 终端保持原始模式，按键原样转给 claude
 	let _ = enable_raw_mode();
@@ -93,7 +108,7 @@ fn attach(project: &Project, session: &Session) -> Option<(String, Color)> {
 		&project.path
 	};
 	let name = session.short_name();
-	match attach::run(cwd, &session.id) {
+	match attach::run(cwd, &["attach", &session.id]) {
 		attach::Outcome::Detached => None,
 		attach::Outcome::Exited(status) if status.success() => None,
 		attach::Outcome::Failed(e) => Some((format!("无法启动 claude：{e}"), Color::Red)),
@@ -161,17 +176,21 @@ fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Re
 				let message = attach(&project, &session);
 				// 先把状态准备好（会读 projects.json），再切回备用屏幕并立刻画出来
 				app.returned(&project.path, &session.session_id, message);
-				enable_raw_mode()?;
-				queue!(
-					io::stdout(),
-					BeginSynchronizedUpdate,
-					EnterAlternateScreen,
-					EnableBracketedPaste,
-					Hide
-				)?;
-				terminal.clear()?;
-				terminal.draw(|f| app.draw(f))?;
-				io::stdout().queue(EndSynchronizedUpdate)?.flush()?;
+				take_back(&mut terminal, &app)?;
+				dirty = false;
+			}
+			Some(Action::Trust(prompt)) => {
+				// 信任提示画在主屏幕上，先清掉，留一行说明
+				execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen, Clear(ClearType::All), MoveTo(0, 0), Show)?;
+				painted_main = true;
+				print!("第一次用「对话」：Claude Code 要先确认信任 HeyClaude 准备的对话目录（空目录）。\r\n");
+				print!("选 Yes 后会自动回到 HeyClaude 并发出你的问题；选 No 就取消。\r\n\r\n");
+				io::stdout().flush()?;
+				let _ = enable_raw_mode();
+				// 带上 /exit：确认信任之后 claude 马上退出，不用自己再退
+				attach::run(app.chat_dir(), &["/exit"]);
+				app.trusted(prompt);
+				take_back(&mut terminal, &app)?;
 				dirty = false;
 			}
 		}

@@ -28,6 +28,9 @@ const CHANGE_DEBOUNCE: Duration = Duration::from_millis(300);
 const MIN_FETCH_GAP: Duration = Duration::from_secs(2);
 // 没有收到变化通知时也定时刷新，兜底（比如监听不到交互会话的变化）
 const FALLBACK_REFRESH: Duration = Duration::from_secs(30);
+// 「对话」固定是列表里的第一项，图标代替序号
+const CHAT: usize = 0;
+const CHAT_ICON: &str = "💬";
 // 失败原因那一列的宽度（“已停止”加两格空）；项目里没有失败任务时不留这一列
 const TAG_WIDTH: usize = 8;
 
@@ -42,6 +45,8 @@ pub enum Layout {
 pub enum Action {
 	Quit,
 	Attach(Project, Session),
+	// 「对话」目录还没被 Claude Code 信任：交给 claude 确认一次，然后重发这句话
+	Trust(String),
 }
 
 struct AddState {
@@ -57,7 +62,8 @@ enum Screen {
 	Add(AddState),
 	Delete,
 	Sessions,
-	NewTask(Input),
+	// from_list：从项目列表直接按 n 开的新对话，取消时回项目列表
+	NewTask { input: Input, from_list: bool },
 }
 
 // 任务列表的状态：标签、展开的分组、光标、撤销栈
@@ -110,6 +116,8 @@ pub struct App {
 	digits: String,
 	digit_due: Option<Instant>,
 	forwarded: Vec<String>,
+	// 已经带你去信任过「对话」目录了，再失败就不再带过去，免得选 No 之后一直循环
+	trust_tried: bool,
 	fetch_tx: Sender<Confirmed>,
 	msg_tx: Sender<Msg>,
 	action: Option<Action>,
@@ -258,6 +266,7 @@ fn list_help() -> Vec<HelpSection> {
 			("↑ ↓ / k j", "选择项目".into()),
 			("Enter", "进入项目".into()),
 			("1–9…", "按序号直接进入（超过 9 个可以连按多位）".into()),
+			("n", "新对话：不属于任何项目，在「对话」里用 claude --bg 开始".into()),
 			("a", "添加项目".into()),
 			("d", "从列表移除项目（目录和会话不动）".into()),
 			("r", "刷新（任务状态一变就会自动刷新）".into()),
@@ -266,7 +275,7 @@ fn list_help() -> Vec<HelpSection> {
 	)]
 }
 
-fn session_help(layout: Layout) -> Vec<HelpSection> {
+fn session_help(layout: Layout, chat: bool) -> Vec<HelpSection> {
 	let mut sections = vec![(
 		"任务",
 		vec![
@@ -279,7 +288,14 @@ fn session_help(layout: Layout) -> Vec<HelpSection> {
 			("c", "确认待确认的任务，它变成完成；在完成的任务上按则取消确认".into()),
 			("C", "确认这个项目下全部待确认任务".into()),
 			("u", "撤销最近一次确认".into()),
-			("n", "新任务：在项目目录里用 claude --bg 启动".into()),
+			(
+				"n",
+				if chat {
+					"新对话：用 claude --bg 开始，不属于任何项目".into()
+				} else {
+					"新任务：在项目目录里用 claude --bg 启动".into()
+				},
+			),
 			("r", "刷新".into()),
 		],
 	)];
@@ -295,11 +311,11 @@ fn session_help(layout: Layout) -> Vec<HelpSection> {
 	sections
 }
 
-fn session_keys(layout: Layout) -> [(&'static str, &'static str); 5] {
+fn session_keys(layout: Layout, chat: bool) -> [(&'static str, &'static str); 5] {
 	[
 		("Enter", "打开"),
 		("c", "确认"),
-		("n", "新任务"),
+		("n", if chat { "新对话" } else { "新任务" }),
 		("Ctrl+Z", if layout == Layout::Tabs { "项目列表" } else { "返回" }),
 		("?", "全部按键"),
 	]
@@ -351,16 +367,16 @@ impl App {
 			Ok(c) => (c, None),
 			Err(e) => (Confirmed::new(), Some((e, Color::Red))),
 		};
-		let screen = if !projects.is_empty() && layout == Layout::Tabs {
-			Screen::Sessions
-		} else {
-			Screen::List
+		// 「对话」总在列表里，tabs 布局总能直接进任务视图；有项目时先停在第一个项目上
+		let (screen, cursor) = match layout {
+			Layout::Tabs => (Screen::Sessions, usize::from(!projects.is_empty())),
+			Layout::Grouped => (Screen::List, 0),
 		};
 		let mut app = App {
 			layout,
 			projects: Vec::new(),
 			missing: HashSet::new(),
-			cursor: 0,
+			cursor,
 			screen,
 			sessions: None,
 			loading: false,
@@ -375,6 +391,7 @@ impl App {
 			digits: String::new(),
 			digit_due: None,
 			forwarded,
+			trust_tried: false,
 			fetch_tx,
 			msg_tx,
 			action: None,
@@ -392,7 +409,12 @@ impl App {
 		self.action.take()
 	}
 
+	// projects 是 projects.json 里的项目；列表里第一个固定是「对话」
 	fn set_projects(&mut self, projects: Vec<Project>) {
+		let chat = store::chat_project();
+		let projects: Vec<Project> = std::iter::once(chat.clone())
+			.chain(projects.into_iter().filter(|p| p.path != chat.path))
+			.collect();
 		self.missing = projects
 			.iter()
 			.filter(|p| !store::dir_exists(&p.path))
@@ -404,6 +426,15 @@ impl App {
 
 	fn current(&self) -> Option<&Project> {
 		self.projects.get(self.cursor)
+	}
+
+	fn in_chat(&self) -> bool {
+		self.cursor == CHAT
+	}
+
+	// 用户添加的项目个数（不算「对话」）
+	fn project_count(&self) -> usize {
+		self.projects.len() - 1
 	}
 
 	fn set_message(&mut self, text: impl Into<String>, color: Color) {
@@ -444,6 +475,8 @@ impl App {
 	}
 
 	fn persist(&mut self, next: Vec<Project>) -> bool {
+		let chat = &self.projects[CHAT].path;
+		let next: Vec<Project> = next.into_iter().filter(|p| &p.path != chat).collect();
 		match store::save_projects(&next) {
 			Ok(()) => {
 				self.set_projects(next);
@@ -486,9 +519,30 @@ impl App {
 					self.refresh();
 				}
 			}
-			Msg::Dispatched(Err(e)) => self.set_message(format!("启动失败：{e}"), Color::Red),
-			Msg::Dispatched(Ok(out)) => {
-				self.set_message(format!("已启动新任务 {out}"), Color::Green);
+			Msg::Dispatched {
+				cwd,
+				prompt,
+				result: Err(e),
+				..
+			} => {
+				// claude --bg 不会弹信任提示，没信任过的目录直接失败。「对话」目录是 HeyClaude 建的，
+				// 第一次用时带你去 Claude Code 里确认一次
+				if cwd == self.projects[CHAT].path && e.contains("not trusted") {
+					if !std::mem::replace(&mut self.trust_tried, true) {
+						self.action = Some(Action::Trust(prompt));
+						return;
+					}
+					return self.set_message("「对话」目录没有被 Claude Code 信任，新对话没有开始", Color::Red);
+				}
+				self.set_message(format!("启动失败：{e}"), Color::Red)
+			}
+			Msg::Dispatched {
+				what,
+				result: Ok(out),
+				..
+			} => {
+				self.trust_tried = false;
+				self.set_message(format!("已启动{what} {out}"), Color::Green);
 				self.refresh();
 			}
 			Msg::Changed => {
@@ -509,7 +563,7 @@ impl App {
 			self.digit_due = None;
 			let n: usize = self.digits.parse().unwrap_or(0);
 			self.digits.clear();
-			self.open_sessions(n.saturating_sub(1));
+			self.open_sessions(n);
 			changed = true;
 		}
 		let fallback = self.last_fetch.is_none_or(|t| now >= t + FALLBACK_REFRESH);
@@ -537,6 +591,20 @@ impl App {
 		}
 		self.go_back();
 		self.refresh();
+	}
+
+	// 信任确认回来：回到对话列表，重发刚才那句话
+	pub fn trusted(&mut self, prompt: String) {
+		self.cursor = CHAT;
+		self.screen = Screen::Sessions;
+		self.go_back();
+		self.set_message("正在开始新对话…", Color::Yellow);
+		let cwd = self.projects[CHAT].path.clone();
+		worker::dispatch_task(self.msg_tx.clone(), "新对话", cwd, prompt, self.forwarded.clone());
+	}
+
+	pub fn chat_dir(&self) -> &str {
+		&self.projects[CHAT].path
 	}
 
 	fn restore_cursor(&mut self) {
@@ -595,14 +663,15 @@ impl App {
 	fn type_digit(&mut self, digit: char) {
 		let digits = format!("{}{digit}", self.digits);
 		let n: usize = digits.parse().unwrap_or(0);
-		if n < 1 || n > self.projects.len() {
+		// 序号 n 是列表里的第 n 个项目，「对话」在它们前面
+		if n < 1 || n > self.project_count() {
 			self.clear_digits();
 			return self.set_message(format!("没有序号 {digits} 的项目"), Color::Yellow);
 		}
-		self.cursor = n - 1;
-		if n * 10 > self.projects.len() {
+		self.cursor = n;
+		if n * 10 > self.project_count() {
 			self.clear_digits();
-			return self.open_sessions(n - 1);
+			return self.open_sessions(n);
 		}
 		self.digits = digits;
 		self.digit_due = Some(Instant::now() + DIGIT_WAIT);
@@ -623,7 +692,7 @@ impl App {
 				let next = format!("{}{text}", add.value);
 				add_edit(add, next);
 			}
-			Screen::NewTask(input) => input.insert(&text),
+			Screen::NewTask { input, .. } => input.insert(&text),
 			_ => {}
 		}
 	}
@@ -638,7 +707,7 @@ impl App {
 			Screen::List => self.list_key(key),
 			Screen::Delete => self.delete_key(key),
 			Screen::Add(_) => self.add_key(key),
-			Screen::NewTask(_) => self.new_task_key(key),
+			Screen::NewTask { .. } => self.new_task_key(key),
 			Screen::Sessions => {
 				if self.current().is_some() {
 					self.sessions_key(key)
@@ -666,6 +735,12 @@ impl App {
 			self.cursor = self.cursor.saturating_sub(1);
 		} else if is_down(&key) {
 			self.cursor = (self.cursor + 1).min(self.projects.len().saturating_sub(1));
+		} else if ch == Some('n') {
+			self.open_sessions(CHAT);
+			self.screen = Screen::NewTask {
+				input: Input::default(),
+				from_list: true,
+			};
 		} else if ch == Some('a') {
 			self.screen = Screen::Add(AddState {
 				value: String::new(),
@@ -679,7 +754,11 @@ impl App {
 			self.help = Some(("全部按键", list_help()));
 		} else if self.current().is_none() {
 		} else if ch == Some('d') {
-			self.screen = Screen::Delete;
+			if self.in_chat() {
+				self.set_message("「对话」不能删除", Color::Yellow);
+			} else {
+				self.screen = Screen::Delete;
+			}
 		} else if key.code == KeyCode::Enter {
 			self.open_sessions(self.cursor);
 		}
@@ -767,10 +846,12 @@ impl App {
 	}
 
 	fn new_task_key(&mut self, key: KeyEvent) {
-		let Screen::NewTask(input) = &mut self.screen else { return };
+		let chat = self.in_chat();
+		let Screen::NewTask { input, from_list } = &mut self.screen else { return };
+		let back = if *from_list { Screen::List } else { Screen::Sessions };
 		if is_back(&key) {
 			self.go_back();
-			self.screen = Screen::Sessions;
+			self.screen = back;
 			return;
 		}
 		match key.code {
@@ -778,13 +859,19 @@ impl App {
 				let text = input.value().trim().to_string();
 				if text.is_empty() {
 					self.go_back();
-					self.screen = Screen::Sessions;
+					self.screen = back;
 					return;
 				}
 				self.screen = Screen::Sessions;
 				let Some(project) = self.current().cloned() else { return };
-				self.set_message(format!("正在 {} 里启动新任务…", project.name), Color::Yellow);
-				worker::dispatch_task(self.msg_tx.clone(), project.path, text, self.forwarded.clone());
+				let what = if chat {
+					self.set_message("正在开始新对话…", Color::Yellow);
+					"新对话"
+				} else {
+					self.set_message(format!("正在 {} 里启动新任务…", project.name), Color::Yellow);
+					"新任务"
+				};
+				worker::dispatch_task(self.msg_tx.clone(), what, project.path, text, self.forwarded.clone());
 			}
 			_ => {
 				input.key(&key);
@@ -812,7 +899,7 @@ impl App {
 			} else if plain_char(&key) == Some('r') {
 				self.refresh();
 			} else if plain_char(&key) == Some('?') {
-				self.help = Some(("全部按键", session_help(self.layout)));
+				self.help = Some(("全部按键", session_help(self.layout, self.in_chat())));
 			}
 			return;
 		};
@@ -837,7 +924,7 @@ impl App {
 			return;
 		}
 		if ch == Some('?') {
-			self.help = Some(("全部按键", session_help(self.layout)));
+			self.help = Some(("全部按键", session_help(self.layout, self.in_chat())));
 			return;
 		}
 		if is_up(&key) {
@@ -868,7 +955,10 @@ impl App {
 		match ch {
 			Some('r') => return self.refresh(),
 			Some('n') => {
-				self.screen = Screen::NewTask(Input::default());
+				self.screen = Screen::NewTask {
+					input: Input::default(),
+					from_list: false,
+				};
 				return;
 			}
 			Some('u') => {
@@ -965,16 +1055,29 @@ impl App {
 		}
 		match &self.screen {
 			Screen::Sessions if self.current().is_some() => self.sessions_lines(columns, rows, inner),
-			Screen::NewTask(input) if self.current().is_some() => {
+			Screen::NewTask { input, .. } if self.current().is_some() => {
 				let project = self.current().unwrap();
-				let mut lines = top_bar(Self::crumb(&format!("{} › 新任务", project.name)), vec![], inner);
-				lines.push(Line::from(span(
-					format!("在 {} 里用 claude --bg 启动一个后台任务", project.name),
-					dim(),
-				)));
+				let chat = self.in_chat();
+				let (title, about, placeholder, start) = if chat {
+					(
+						"对话 › 新对话".to_string(),
+						"不属于任何项目，用 claude --bg 开一个对话".to_string(),
+						"想问 Claude 什么？",
+						"开始",
+					)
+				} else {
+					(
+						format!("{} › 新任务", project.name),
+						format!("在 {} 里用 claude --bg 启动一个后台任务", project.name),
+						"要 Claude 做什么？",
+						"启动",
+					)
+				};
+				let mut lines = top_bar(Self::crumb(&title), vec![], inner);
+				lines.push(Line::from(span(about, dim())));
 				lines.push(Line::default());
-				lines.extend(input.lines(span("❯ ", red()), "要 Claude 做什么？", inner));
-				lines.extend(key_hints(&[("Enter", "启动"), ("← →", "移动光标"), ("Ctrl+U", "清空"), ("Ctrl+Z", "取消")], &None));
+				lines.extend(input.lines(span("❯ ", red()), placeholder, inner));
+				lines.extend(key_hints(&[("Enter", start), ("← →", "移动光标"), ("Ctrl+U", "清空"), ("Ctrl+Z", "取消")], &None));
 				lines
 			}
 			Screen::Add(add) => self.add_lines(add, inner),
@@ -998,49 +1101,57 @@ impl App {
 		for s in stats.iter().flatten() {
 			totals.add(s);
 		}
-		let mut right = vec![span(format!("{} 个项目", self.projects.len()), dim()), span(" · ", dim())];
+		let mut right = vec![span(format!("{} 个项目", self.project_count()), dim()), span(" · ", dim())];
 		right.extend(status_counts(&totals));
 		let mut lines = top_bar(vec![Self::brand()], right, inner);
 
-		if self.projects.is_empty() {
+		// 每个项目一行：序号、名字、五种状态的数量（固定五列，为零也显示）。样式和任务列表的行一致。
+		// 「对话」固定在最上面，图标代替序号，下面空一行再列项目
+		let number_width = (self.project_count().to_string().len() + 2).max(3);
+		let name_width = name_column(self.projects.iter().map(|p| p.name.as_str()), columns.saturating_sub(4));
+		// 数字列的宽度按最大的数来定，这样各行上下对齐
+		let biggest = stats.iter().flatten().map(Counts::max).max().unwrap_or(0);
+		let num_width = biggest.to_string().len();
+		let row = |index: usize| {
+			let project = &self.projects[index];
+			let selected = index == self.cursor;
+			let number = if index == CHAT { CHAT_ICON.to_string() } else { index.to_string() };
+			let mut row = vec![
+				span(if selected { "❯ " } else { "  " }, red()),
+				span(fit(&number, number_width), dim()),
+				span(
+					fit(&project.name, name_width),
+					if selected {
+						red().add_modifier(Modifier::BOLD)
+					} else {
+						Style::default()
+					},
+				),
+			];
+			if self.missing.contains(&project.path) {
+				row.push(span("目录不存在（按 d 移除）", Style::default().fg(Color::Yellow)));
+			} else if let Some(stats) = &stats {
+				row.extend(status_columns(&stats[index], num_width));
+			} else if self.loading {
+				row.push(span("…", dim()));
+			}
+			Line::from(row)
+		};
+		lines.push(row(CHAT));
+		lines.push(Line::default());
+
+		if self.project_count() == 0 {
 			lines.push(Line::from("还没有项目。"));
 			lines.push(Line::from(span("按 a 添加项目目录。", dim())));
 		} else {
-			// 每个项目一行：序号、名字、五种状态的数量（固定五列，为零也显示）。样式和任务列表的行一致
-			let number_width = (self.projects.len().to_string().len() + 2).max(3);
-			let name_width = name_column(self.projects.iter().map(|p| p.name.as_str()), columns.saturating_sub(4));
-			// 数字列的宽度按最大的数来定，这样各行上下对齐
-			let biggest = stats.iter().flatten().map(Counts::max).max().unwrap_or(0);
-			let num_width = biggest.to_string().len();
-			let visible = rows.saturating_sub(7).max(1);
-			let start = window_start(self.cursor, visible, self.projects.len());
-			if start > 0 {
-				lines.push(Line::from(span(format!("  ↑ 还有 {start} 个"), dim())));
+			let visible = rows.saturating_sub(9).max(1);
+			let start = 1 + window_start(self.cursor.saturating_sub(1), visible, self.project_count());
+			if start > 1 {
+				lines.push(Line::from(span(format!("  ↑ 还有 {} 个", start - 1), dim())));
 			}
-			for (index, project) in self.projects.iter().enumerate().skip(start).take(visible) {
-				let selected = index == self.cursor;
-				let mut row = vec![
-					span(if selected { "❯ " } else { "  " }, red()),
-					span(fit(&(index + 1).to_string(), number_width), dim()),
-					span(
-						fit(&project.name, name_width),
-						if selected {
-							red().add_modifier(Modifier::BOLD)
-						} else {
-							Style::default()
-						},
-					),
-				];
-				if self.missing.contains(&project.path) {
-					row.push(span("目录不存在（按 d 移除）", Style::default().fg(Color::Yellow)));
-				} else if let Some(stats) = &stats {
-					row.extend(status_columns(&stats[index], num_width));
-				} else if self.loading {
-					row.push(span("…", dim()));
-				}
-				lines.push(Line::from(row));
-			}
-			let rest = self.projects.len().saturating_sub(start + visible);
+			let end = (start + visible).min(self.projects.len());
+			lines.extend((start..end).map(row));
+			let rest = self.projects.len() - end;
 			if rest > 0 {
 				lines.push(Line::from(span(format!("  ↓ 还有 {rest} 个"), dim())));
 			}
@@ -1054,6 +1165,7 @@ impl App {
 		lines.extend(key_hints(
 			&[
 				("Enter", "进入"),
+				("n", "新对话"),
 				("a", "添加"),
 				("d", "删除"),
 				("Ctrl+Z", "退出"),
@@ -1141,7 +1253,7 @@ impl App {
 			let text = format!("确认 {} 下全部 {} 个待确认任务？(y/N)", project.name, groups.pending.len());
 			lines.push(Line::from(span(text, Style::default().fg(Color::Yellow))));
 		}
-		lines.extend(key_hints(&session_keys(self.layout), &self.message));
+		lines.extend(key_hints(&session_keys(self.layout, self.in_chat()), &self.message));
 		lines
 	}
 
@@ -1241,7 +1353,12 @@ impl App {
 
 		let mut lines = Vec::new();
 		if out.is_empty() {
-			lines.push(Line::from(span("这个项目还没有后台任务，按 n 启动一个", dim())));
+			let text = if self.in_chat() {
+				"还没有对话，按 n 开始一个"
+			} else {
+				"这个项目还没有后台任务，按 n 启动一个"
+			};
+			lines.push(Line::from(span(text, dim())));
 			return lines;
 		}
 		let visible = rows.saturating_sub(9).max(4);
@@ -1271,7 +1388,8 @@ impl App {
 			} else {
 				dim()
 			};
-			project_items.push(span(p.name.clone(), style));
+			let name = if i == CHAT { format!("{CHAT_ICON} {}", p.name) } else { p.name.clone() };
+			project_items.push(span(name, style));
 		}
 		project_items.push(span("← →", dim()));
 		let mut lines = wrap_items(project_items, 3, inner);

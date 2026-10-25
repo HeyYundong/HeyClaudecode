@@ -16,8 +16,14 @@ pub enum Msg {
 		result: Result<Vec<Session>, String>,
 		revived: Vec<String>,
 	},
-	// claude --bg 启动新任务的结果
-	Dispatched(Result<String, String>),
+	// claude --bg 启动新任务的结果。what 是启动的是什么（新任务 / 新对话），用在提示里；
+	// 目录没被信任时要用 cwd 和 prompt 重试
+	Dispatched {
+		what: &'static str,
+		cwd: String,
+		prompt: String,
+		result: Result<String, String>,
+	},
 	// Claude Code 的任务状态文件有变化
 	Changed,
 }
@@ -90,7 +96,7 @@ pub fn spawn_watcher(tx: Sender<Msg>) {
 }
 
 // 用 claude --bg 在项目目录里启动后台任务，返回它打印的 ID
-pub fn dispatch_task(tx: Sender<Msg>, cwd: String, prompt: String, forwarded: Vec<String>) {
+pub fn dispatch_task(tx: Sender<Msg>, what: &'static str, cwd: String, prompt: String, forwarded: Vec<String>) {
 	thread::spawn(move || {
 		let output = Command::new("claude")
 			.args(&forwarded)
@@ -112,7 +118,12 @@ pub fn dispatch_task(tx: Sender<Msg>, cwd: String, prompt: String, forwarded: Ve
 			}
 			Ok(out) => Ok(last_line(&out.stdout)),
 		};
-		let _ = tx.send(Msg::Dispatched(result));
+		let _ = tx.send(Msg::Dispatched {
+			what,
+			cwd,
+			prompt,
+			result,
+		});
 	});
 }
 

@@ -15,6 +15,27 @@ pub fn config_dir() -> PathBuf {
 	}
 }
 
+// 不属于任何项目的对话都在这个目录里启动。Claude Code 启动时必须有工作目录，
+// 所以由 HeyClaude 准备一个空目录；界面上不显示它
+pub fn chat_dir() -> PathBuf {
+	match std::env::var_os("XDG_DATA_HOME") {
+		Some(base) if !base.is_empty() => PathBuf::from(base).join("heyclaude").join("chat"),
+		_ => home_dir().join(".local").join("share").join("heyclaude").join("chat"),
+	}
+}
+
+// 「对话」在列表里当作一个固定在最上面的项目，不写进 projects.json
+pub fn chat_project() -> Project {
+	let dir = chat_dir();
+	let _ = fs::create_dir_all(&dir);
+	Project {
+		name: "对话".into(),
+		path: dir.display().to_string(),
+		added_at: None,
+		extra: Default::default(),
+	}
+}
+
 fn projects_file() -> PathBuf {
 	config_dir().join("projects.json")
 }

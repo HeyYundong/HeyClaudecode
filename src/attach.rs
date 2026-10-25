@@ -5,7 +5,8 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-// 在 HeyClaude 自己开的伪终端里运行 `claude attach`，把按键和输出原样转发。
+// 在 HeyClaude 自己开的伪终端里运行 claude（`claude attach`，或者第一次用「对话」时的信任确认），
+// 把按键和输出原样转发。
 //
 // 直接把终端交给 claude 时，claude 离开它的界面后还要半秒左右进程才退出，
 // 这期间按的键（比如连按的第二下 Ctrl+Z）会被它读走丢掉。转发时能看到 claude 的输出：
@@ -60,9 +61,9 @@ fn open_pty() -> io::Result<(File, File)> {
 	Ok(unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) })
 }
 
-fn spawn(cwd: &str, id: &str, slave: &File) -> io::Result<Child> {
+fn spawn(cwd: &str, args: &[&str], slave: &File) -> io::Result<Child> {
 	let mut cmd = Command::new("claude");
-	cmd.args(["attach", id])
+	cmd.args(args)
 		.current_dir(cwd)
 		.stdin(Stdio::from(slave.try_clone()?))
 		.stdout(Stdio::from(slave.try_clone()?))
@@ -88,12 +89,12 @@ fn drain_in_background(mut master: File, mut child: Child) {
 	});
 }
 
-pub fn run(cwd: &str, id: &str) -> Outcome {
+pub fn run(cwd: &str, args: &[&str]) -> Outcome {
 	let (master, slave) = match open_pty() {
 		Ok(p) => p,
 		Err(e) => return Outcome::Failed(e),
 	};
-	let mut child = match spawn(cwd, id, &slave) {
+	let mut child = match spawn(cwd, args, &slave) {
 		Ok(c) => c,
 		Err(e) => return Outcome::Failed(e),
 	};
