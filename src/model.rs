@@ -77,7 +77,9 @@ fn model_effort(s: &Value, model: Option<&str>) -> Option<String> {
 		.find_map(|(_, v)| str_at(v, "effortLevel"))
 }
 
-// 不指定时用的思考强度：跟着选中的模型走（每个模型可以有自己的默认强度）
+// 不指定时用的思考强度：跟着选中的模型走（每个模型可以有自己的默认强度），哪里都没设就是 medium
+pub const DEFAULT_EFFORT: &str = "medium";
+
 pub fn default_effort(forwarded: &[String], cwd: &str, model: Option<&str>) -> Option<String> {
 	if let Some(e) = flag(forwarded, "--effort") {
 		return Some(e);
@@ -86,6 +88,7 @@ pub fn default_effort(forwarded: &[String], cwd: &str, model: Option<&str>) -> O
 	all.iter()
 		.find_map(|s| model_effort(s, model))
 		.or_else(|| all.iter().find_map(|s| str_at(s, "effortLevel")))
+		.or_else(|| Some(DEFAULT_EFFORT.to_string()))
 }
 
 // 新建任务界面上的选择；None 表示用默认

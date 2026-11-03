@@ -1212,7 +1212,7 @@ impl App {
 			row
 		};
 		let model_row = item("模型", value(choice.model(), default_model, "跟随账号"));
-		let effort_row = item("思考强度", value(choice.effort(), default_effort, "跟随模型"));
+		let effort_row = item("思考强度", value(choice.effort(), default_effort, model::DEFAULT_EFFORT));
 		let (model_line, effort_line) = (Line::from(model_row), Line::from(effort_row));
 		// 一行放得下就并排，否则各占一行
 		if line_width(&model_line) + 4 + line_width(&effort_line) > inner {
