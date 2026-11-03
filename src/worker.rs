@@ -22,6 +22,8 @@ pub enum Msg {
 		what: &'static str,
 		cwd: String,
 		prompt: String,
+		// 传给 claude --bg 的参数，重试时原样带上
+		args: Vec<String>,
 		result: Result<String, String>,
 	},
 	// Claude Code 的任务状态文件有变化
@@ -96,10 +98,10 @@ pub fn spawn_watcher(tx: Sender<Msg>) {
 }
 
 // 用 claude --bg 在项目目录里启动后台任务，返回它打印的 ID
-pub fn dispatch_task(tx: Sender<Msg>, what: &'static str, cwd: String, prompt: String, forwarded: Vec<String>) {
+pub fn dispatch_task(tx: Sender<Msg>, what: &'static str, cwd: String, prompt: String, args: Vec<String>) {
 	thread::spawn(move || {
 		let output = Command::new("claude")
-			.args(&forwarded)
+			.args(&args)
 			.arg("--bg")
 			.arg(&prompt)
 			.current_dir(&cwd)
@@ -118,7 +120,13 @@ pub fn dispatch_task(tx: Sender<Msg>, what: &'static str, cwd: String, prompt: S
 			}
 			Ok(out) => Ok(last_line(&out.stdout)),
 		};
-		let _ = tx.send(Msg::Dispatched { what, cwd, prompt, result });
+		let _ = tx.send(Msg::Dispatched {
+			what,
+			cwd,
+			prompt,
+			args,
+			result,
+		});
 	});
 }
 

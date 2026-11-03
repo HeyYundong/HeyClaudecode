@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::input::Input;
+use crate::model::{self, Choice};
 use crate::sessions::{Counts, Groups, STATUS_ORDER, Session, Status, group_sessions, reactivated, stats_for, suggest_paths};
 use crate::store::{self, Confirmed, Project, Titles};
 use crate::text::{self, fit, info, name_column, pad_start, relative_time, truncate, where_in, width, with_suffix};
@@ -45,8 +46,8 @@ pub enum Layout {
 pub enum Action {
 	Quit,
 	Attach(Project, Session),
-	// 「对话」目录还没被 Claude Code 信任：交给 claude 确认一次，然后重发这句话
-	Trust(String),
+	// 「对话」目录还没被 Claude Code 信任：交给 claude 确认一次，然后带同样的参数重发这句话
+	Trust(String, Vec<String>),
 }
 
 struct AddState {
@@ -63,7 +64,8 @@ enum Screen {
 	Delete,
 	Sessions,
 	// from_list：从项目列表直接按 n 开的新对话，取消时回项目列表
-	NewTask { input: Input, from_list: bool },
+	// choice：这个任务用的模型和思考强度，默认跟着 claude 的设置
+	NewTask { input: Input, from_list: bool, choice: Choice },
 }
 
 // 任务列表的状态：标签、展开的分组、光标、撤销栈
@@ -573,6 +575,7 @@ impl App {
 			Msg::Dispatched {
 				cwd,
 				prompt,
+				args,
 				result: Err(e),
 				..
 			} => {
@@ -580,7 +583,7 @@ impl App {
 				// 第一次用时带你去 Claude Code 里确认一次
 				if cwd == self.projects[CHAT].path && e.contains("not trusted") {
 					if !std::mem::replace(&mut self.trust_tried, true) {
-						self.action = Some(Action::Trust(prompt));
+						self.action = Some(Action::Trust(prompt, args));
 						return;
 					}
 					return self.set_message("「对话」目录没有被 Claude Code 信任，新对话没有开始", Color::Red);
@@ -641,13 +644,13 @@ impl App {
 	}
 
 	// 信任确认回来：回到对话列表，重发刚才那句话
-	pub fn trusted(&mut self, prompt: String) {
+	pub fn trusted(&mut self, prompt: String, args: Vec<String>) {
 		self.cursor = CHAT;
 		self.screen = Screen::Sessions;
 		self.go_back();
 		self.set_message("正在开始新对话…", Color::Yellow);
 		let cwd = self.projects[CHAT].path.clone();
-		worker::dispatch_task(self.msg_tx.clone(), "新对话", cwd, prompt, self.forwarded.clone());
+		worker::dispatch_task(self.msg_tx.clone(), "新对话", cwd, prompt, args);
 	}
 
 	pub fn chat_dir(&self) -> &str {
@@ -800,6 +803,7 @@ impl App {
 			self.screen = Screen::NewTask {
 				input: Input::default(),
 				from_list: true,
+				choice: Choice::default(),
 			};
 		} else if ch == Some('a') {
 			self.screen = Screen::Add(AddState {
@@ -907,7 +911,7 @@ impl App {
 
 	fn new_task_key(&mut self, key: KeyEvent) {
 		let chat = self.in_chat();
-		let Screen::NewTask { input, from_list } = &mut self.screen else {
+		let Screen::NewTask { input, from_list, choice } = &mut self.screen else {
 			return;
 		};
 		let back = if *from_list { Screen::List } else { Screen::Sessions };
@@ -917,7 +921,10 @@ impl App {
 			return;
 		}
 		match key.code {
+			KeyCode::Tab => choice.next_model(),
+			KeyCode::BackTab => choice.next_effort(),
 			KeyCode::Enter => {
+				let args = choice.args(&self.forwarded);
 				let text = input.value().trim().to_string();
 				if text.is_empty() {
 					self.go_back();
@@ -933,7 +940,7 @@ impl App {
 					self.set_message(format!("正在 {} 里启动新任务…", project.name), Color::Yellow);
 					"新任务"
 				};
-				worker::dispatch_task(self.msg_tx.clone(), what, project.path, text, self.forwarded.clone());
+				worker::dispatch_task(self.msg_tx.clone(), what, project.path, text, args);
 			}
 			_ => {
 				input.key(&key);
@@ -1035,6 +1042,7 @@ impl App {
 				self.screen = Screen::NewTask {
 					input: Input::default(),
 					from_list: false,
+					choice: Choice::default(),
 				};
 				return;
 			}
@@ -1141,7 +1149,7 @@ impl App {
 		}
 		match &self.screen {
 			Screen::Sessions if self.current().is_some() => self.sessions_lines(columns, rows, inner),
-			Screen::NewTask { input, .. } if self.current().is_some() => {
+			Screen::NewTask { input, choice, .. } if self.current().is_some() => {
 				let project = self.current().unwrap();
 				let chat = self.in_chat();
 				let (title, about, placeholder, start) = if chat {
@@ -1163,8 +1171,16 @@ impl App {
 				lines.push(Line::from(span(about, dim())));
 				lines.push(Line::default());
 				lines.extend(input.lines(span("❯ ", red()), placeholder, inner));
+				lines.push(Line::default());
+				lines.extend(self.choice_lines(choice, &project.path, inner));
 				lines.extend(key_hints(
-					&[("Enter", start), ("← →", "移动光标"), ("Ctrl+U", "清空"), ("Ctrl+Z", "取消")],
+					&[
+						("Enter", start),
+						("Tab", "换模型"),
+						("Shift+Tab", "换思考强度"),
+						("Ctrl+U", "清空"),
+						("Ctrl+Z", "取消"),
+					],
 					&None,
 				));
 				lines
@@ -1172,6 +1188,36 @@ impl App {
 			Screen::Add(add) => self.add_lines(add, inner),
 			_ => self.list_lines(columns, rows, inner),
 		}
+	}
+
+	// 模型和思考强度两项；没选的显示“默认”和实际会用的值
+	fn choice_lines(&self, choice: &Choice, cwd: &str, inner: usize) -> Vec<Line<'static>> {
+		let default_model = model::default_model(&self.forwarded, cwd);
+		let model_used = choice.model().map(str::to_string).or(default_model.clone());
+		let default_effort = model::default_effort(&self.forwarded, cwd, model_used.as_deref());
+		let value = |picked: Option<&str>, default: Option<String>, unknown: &str| match picked {
+			Some(v) => vec![span(v.to_string(), red().add_modifier(Modifier::BOLD))],
+			None => vec![
+				span("默认", bold()),
+				span(format!("（{}）", default.as_deref().unwrap_or(unknown)), dim()),
+			],
+		};
+		let item = |label: &str, value: Vec<Span<'static>>| {
+			let mut row = vec![span(format!("{label} "), dim())];
+			row.extend(value);
+			row
+		};
+		let model_row = item("模型", value(choice.model(), default_model, "账号默认"));
+		let effort_row = item("思考强度", value(choice.effort(), default_effort, "模型默认"));
+		let (model_line, effort_line) = (Line::from(model_row), Line::from(effort_row));
+		// 一行放得下就并排，否则各占一行
+		if line_width(&model_line) + 4 + line_width(&effort_line) > inner {
+			return vec![model_line, effort_line];
+		}
+		let mut spans = model_line.spans;
+		spans.push(span("    ", Style::default()));
+		spans.extend(effort_line.spans);
+		vec![Line::from(spans)]
 	}
 
 	fn all_stats(&self) -> Option<Vec<Counts>> {

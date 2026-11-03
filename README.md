@@ -136,6 +136,8 @@ hcc --tabs      # 一个界面里用标签切换项目和状态
 hcc --model opus --effort high
 ```
 
+**模型和思考强度**：按 `n` 新建任务时，输入框下面显示这个任务用的模型和思考强度。`Tab` 换模型（fable / opus / sonnet / haiku），`Shift+Tab` 换思考强度（low … max），转一圈回到「默认」。「默认」后面括号里是实际会用的值，依次取自上面的启动参数、`ANTHROPIC_MODEL`、项目和用户的 Claude Code 设置。选的值只对这一个任务生效，会替换启动参数里的 `--model` / `--effort`。
+
 ## 状态规则
 
 - 只管后台任务。Claude Code 记成 done 的进待确认，failed（出错）和 stopped（被停止）进失败。Claude Code 以后新增的结束状态一律按做完了处理，进待确认。

@@ -1,6 +1,7 @@
 mod app;
 mod attach;
 mod input;
+mod model;
 mod sessions;
 mod store;
 mod text;
@@ -48,6 +49,9 @@ fn usage() -> String {
   除 --tabs、-h、-v 外的参数会在按 n 新建任务时传给 `claude --bg`，例如:
 
     hcc --model opus --effort high
+
+  按 n 新建任务时也可以单独给这个任务选：Tab 换模型，Shift+Tab 换思考强度。
+  没选的显示「默认」和实际会用的值（来自上面的参数或 Claude Code 的设置）。
 
 项目列表保存在 {}/projects.json，确认记录保存在 reviews.json",
 		store::config_dir().display()
@@ -179,7 +183,7 @@ fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Re
 				take_back(&mut terminal, &app)?;
 				dirty = false;
 			}
-			Some(Action::Trust(prompt)) => {
+			Some(Action::Trust(prompt, args)) => {
 				// 信任提示画在主屏幕上，先清掉，留一行说明
 				execute!(
 					io::stdout(),
@@ -196,7 +200,7 @@ fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Re
 				let _ = enable_raw_mode();
 				// 带上 /exit：确认信任之后 claude 马上退出，不用自己再退
 				attach::run(app.chat_dir(), &["/exit"]);
-				app.trusted(prompt);
+				app.trusted(prompt, args);
 				take_back(&mut terminal, &app)?;
 				dirty = false;
 			}
