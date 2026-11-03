@@ -51,7 +51,7 @@ fn usage() -> String {
     hcc --model opus --effort high
 
   按 n 新建任务时也可以单独给这个任务选：Tab 换模型，Shift+Tab 换思考强度。
-  没选的显示「默认」和实际会用的值（来自上面的参数或 Claude Code 的设置）。
+  没选时显示实际会用的值（来自上面的参数或 Claude Code 的设置），选过的标红。
 
 项目列表保存在 {}/projects.json，确认记录保存在 reviews.json",
 		store::config_dir().display()

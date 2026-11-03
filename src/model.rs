@@ -95,21 +95,29 @@ pub struct Choice {
 	pub effort: Option<usize>,
 }
 
-fn cycle(current: Option<usize>, len: usize) -> Option<usize> {
-	match current {
-		None => Some(0),
-		Some(i) if i + 1 < len => Some(i + 1),
-		Some(_) => None,
+// 转一圈的顺序：默认值 → 列表里排在默认值后面的 → 绕回前面的 → 回到默认值。
+// 和默认值一样的那项跳过，免得同一个名字出现两次
+fn cycle(current: Option<usize>, list: &[&str], default: Option<&str>) -> Option<usize> {
+	let at = default.and_then(|d| list.iter().position(|&x| x == d));
+	let start = at.map_or(0, |i| i + 1);
+	let order: Vec<usize> = (0..list.len())
+		.map(|k| (start + k) % list.len())
+		.filter(|&i| Some(i) != at)
+		.collect();
+	match current.and_then(|c| order.iter().position(|&i| i == c)) {
+		None if current.is_none() => order.first().copied(),
+		None => None,
+		Some(k) => order.get(k + 1).copied(),
 	}
 }
 
 impl Choice {
-	pub fn next_model(&mut self) {
-		self.model = cycle(self.model, MODELS.len());
+	pub fn next_model(&mut self, default: Option<&str>) {
+		self.model = cycle(self.model, &MODELS, default);
 	}
 
-	pub fn next_effort(&mut self) {
-		self.effort = cycle(self.effort, EFFORTS.len());
+	pub fn next_effort(&mut self, default: Option<&str>) {
+		self.effort = cycle(self.effort, &EFFORTS, default);
 	}
 
 	pub fn model(&self) -> Option<&'static str> {
@@ -171,11 +179,25 @@ mod tests {
 	fn cycles_back_to_default() {
 		let mut c = Choice::default();
 		for _ in 0..MODELS.len() {
-			c.next_model();
+			c.next_model(None);
 		}
 		assert_eq!(c.model(), Some("haiku"));
-		c.next_model();
+		c.next_model(None);
 		assert_eq!(c.model(), None);
+	}
+
+	#[test]
+	fn cycle_skips_default() {
+		let mut seen = Vec::new();
+		let mut c = Choice::default();
+		loop {
+			c.next_model(Some("opus"));
+			match c.model() {
+				Some(m) => seen.push(m),
+				None => break,
+			}
+		}
+		assert_eq!(seen, ["sonnet", "haiku", "fable"]);
 	}
 
 	#[test]

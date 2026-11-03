@@ -911,6 +911,7 @@ impl App {
 
 	fn new_task_key(&mut self, key: KeyEvent) {
 		let chat = self.in_chat();
+		let cwd = self.current().map(|p| p.path.clone()).unwrap_or_default();
 		let Screen::NewTask { input, from_list, choice } = &mut self.screen else {
 			return;
 		};
@@ -921,8 +922,14 @@ impl App {
 			return;
 		}
 		match key.code {
-			KeyCode::Tab => choice.next_model(),
-			KeyCode::BackTab => choice.next_effort(),
+			KeyCode::Tab => choice.next_model(model::default_model(&self.forwarded, &cwd).as_deref()),
+			KeyCode::BackTab => {
+				let model_used = choice
+					.model()
+					.map(str::to_string)
+					.or_else(|| model::default_model(&self.forwarded, &cwd));
+				choice.next_effort(model::default_effort(&self.forwarded, &cwd, model_used.as_deref()).as_deref());
+			}
 			KeyCode::Enter => {
 				let args = choice.args(&self.forwarded);
 				let text = input.value().trim().to_string();
@@ -1190,25 +1197,22 @@ impl App {
 		}
 	}
 
-	// 模型和思考强度两项；没选的显示“默认”和实际会用的值
+	// 模型和思考强度两项：没选的显示实际会用的值，选过的标红
 	fn choice_lines(&self, choice: &Choice, cwd: &str, inner: usize) -> Vec<Line<'static>> {
 		let default_model = model::default_model(&self.forwarded, cwd);
 		let model_used = choice.model().map(str::to_string).or(default_model.clone());
 		let default_effort = model::default_effort(&self.forwarded, cwd, model_used.as_deref());
 		let value = |picked: Option<&str>, default: Option<String>, unknown: &str| match picked {
 			Some(v) => vec![span(v.to_string(), red().add_modifier(Modifier::BOLD))],
-			None => vec![
-				span("默认", bold()),
-				span(format!("（{}）", default.as_deref().unwrap_or(unknown)), dim()),
-			],
+			None => vec![span(default.unwrap_or_else(|| unknown.to_string()), bold())],
 		};
 		let item = |label: &str, value: Vec<Span<'static>>| {
 			let mut row = vec![span(format!("{label} "), dim())];
 			row.extend(value);
 			row
 		};
-		let model_row = item("模型", value(choice.model(), default_model, "账号默认"));
-		let effort_row = item("思考强度", value(choice.effort(), default_effort, "模型默认"));
+		let model_row = item("模型", value(choice.model(), default_model, "跟随账号"));
+		let effort_row = item("思考强度", value(choice.effort(), default_effort, "跟随模型"));
 		let (model_line, effort_line) = (Line::from(model_row), Line::from(effort_row));
 		// 一行放得下就并排，否则各占一行
 		if line_width(&model_line) + 4 + line_width(&effort_line) > inner {
