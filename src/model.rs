@@ -1,13 +1,27 @@
 // 新建任务时选的模型和思考强度。
-// 默认值按 Claude Code 的规则找：hcc 的启动参数 → 环境变量（模型）→ 项目设置 → 用户设置
+// 默认值按 Claude Code 的规则找：hcc 的启动参数 → 环境变量（模型）→ 项目设置 → 用户设置。
+// hagy 用 agy 的模型（不带强度后缀的名字，强度用 --effort 另给），默认值看启动参数和 agy 的设置
 use std::path::Path;
 
 use serde_json::Value;
 
-use crate::store;
+use crate::{agy, backend, store};
 
 pub const MODELS: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
+pub const AGY_MODELS: [&str; 7] = [
+	"gemini-4-neon",
+	"gemini-4-carbon",
+	"gemini-4-argon",
+	"gemini-4-hydrogen",
+	"gemini-3.8-flash",
+	"claude-opus-5-5",
+	"claude-sonnet-5-5",
+];
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+fn models() -> &'static [&'static str] {
+	if backend::is_agy() { &AGY_MODELS } else { &MODELS }
+}
 
 // 启动参数里 --name value 或 --name=value 的值
 fn flag(args: &[String], name: &str) -> Option<String> {
@@ -63,6 +77,9 @@ fn str_at(v: &Value, key: &str) -> Option<String> {
 
 // 不指定时 claude 会用的模型；找不到就是 None（账号默认）
 pub fn default_model(forwarded: &[String], cwd: &str) -> Option<String> {
+	if backend::is_agy() {
+		return flag(forwarded, "--model").or_else(agy::default_model);
+	}
 	flag(forwarded, "--model")
 		.or_else(|| env("ANTHROPIC_MODEL"))
 		.or_else(|| settings(cwd).iter().find_map(|s| str_at(s, "model")))
@@ -83,6 +100,9 @@ pub const DEFAULT_EFFORT: &str = "medium";
 pub fn default_effort(forwarded: &[String], cwd: &str, model: Option<&str>) -> Option<String> {
 	if let Some(e) = flag(forwarded, "--effort") {
 		return Some(e);
+	}
+	if backend::is_agy() {
+		return agy::default_effort(model);
 	}
 	let all = settings(cwd);
 	all.iter()
@@ -116,7 +136,7 @@ fn cycle(current: Option<usize>, list: &[&str], default: Option<&str>) -> Option
 
 impl Choice {
 	pub fn next_model(&mut self, default: Option<&str>) {
-		self.model = cycle(self.model, &MODELS, default);
+		self.model = cycle(self.model, models(), default);
 	}
 
 	pub fn next_effort(&mut self, default: Option<&str>) {
@@ -124,7 +144,7 @@ impl Choice {
 	}
 
 	pub fn model(&self) -> Option<&'static str> {
-		self.model.map(|i| MODELS[i])
+		self.model.map(|i| models()[i])
 	}
 
 	pub fn effort(&self) -> Option<&'static str> {

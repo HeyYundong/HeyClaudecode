@@ -61,8 +61,8 @@ fn open_pty() -> io::Result<(File, File)> {
 	Ok(unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) })
 }
 
-fn spawn(cwd: &str, args: &[&str], slave: &File) -> io::Result<Child> {
-	let mut cmd = Command::new("claude");
+fn spawn(program: &str, cwd: &str, args: &[&str], slave: &File) -> io::Result<Child> {
+	let mut cmd = Command::new(program);
 	cmd.args(args)
 		.current_dir(cwd)
 		.stdin(Stdio::from(slave.try_clone()?))
@@ -89,12 +89,53 @@ fn drain_in_background(mut master: File, mut child: Child) {
 	});
 }
 
-pub fn run(cwd: &str, args: &[&str]) -> Outcome {
+// Ctrl+Z 的几种写法：普通终端是 0x1a；agy 会打开 kitty 键盘协议和 modifyOtherKeys，
+// 这时终端发的是 CSI 122;5u（可能带事件类型 :1）或 CSI 27;5;122~
+fn has_ctrl_z(data: &[u8]) -> bool {
+	data.contains(&0x1a)
+		|| [&b"\x1b[122;5u"[..], b"\x1b[122;5:", b"\x1b[27;5;122~"]
+			.iter()
+			.any(|seq| data.windows(seq.len()).any(|w| w == *seq))
+}
+
+// 把 agy 打开的键盘模式关掉：它被挂断时不一定来得及自己恢复，
+// 不关的话回到 HeyClaude 后方向键之类会变成乱码
+const RESET_KEYS: &[u8] = b"\x1b[>4m\x1b[<99u";
+
+// 挂断 agy：像关掉终端窗口一样发 SIGHUP。等它退出（最多 2 秒），这样回到列表时
+// 会话已经关上，不会还显示“进行中”；超时就留在后台继续等
+fn hang_up(master: File, mut child: Child) {
+	unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGHUP) };
+	let mut master = master;
+	let mut buf = [0u8; 8192];
+	let start = Instant::now();
+	while start.elapsed() < Duration::from_secs(2) {
+		if let Ok(Some(_)) = child.try_wait() {
+			break;
+		}
+		let mut fds = [libc::pollfd {
+			fd: master.as_raw_fd(),
+			events: libc::POLLIN,
+			revents: 0,
+		}];
+		if unsafe { libc::poll(fds.as_mut_ptr(), 1, 20) } > 0 && !matches!(master.read(&mut buf), Ok(n) if n > 0) {
+			break;
+		}
+	}
+	let _ = io::stdout().write_all(RESET_KEYS);
+	let _ = io::stdout().flush();
+	drain_in_background(master, child);
+}
+
+// ctrl_z_hangs_up：Ctrl+Z 由 HeyClaude 处理，挂断子进程后返回（agy 用）。agy 不在备用屏幕里运行
+// （只有信任提示之类会短暂进出），所以这时离开备用屏幕不算离开，只看 Ctrl+Z 和进程退出；
+// 否则按键原样转发，由 claude attach 自己处理
+pub fn run(program: &str, cwd: &str, args: &[&str], ctrl_z_hangs_up: bool) -> Outcome {
 	let (master, slave) = match open_pty() {
 		Ok(p) => p,
 		Err(e) => return Outcome::Failed(e),
 	};
-	let mut child = match spawn(cwd, args, &slave) {
+	let mut child = match spawn(program, cwd, args, &slave) {
 		Ok(c) => c,
 		Err(e) => return Outcome::Failed(e),
 	};
@@ -154,7 +195,7 @@ pub fn run(cwd: &str, args: &[&str]) -> Outcome {
 					} else {
 						let _ = stdout.write_all(chunk);
 						let _ = stdout.flush();
-						if left_alt(&scan) == Some(true) {
+						if !ctrl_z_hangs_up && left_alt(&scan) == Some(true) {
 							leaving = Some(Instant::now());
 						}
 					}
@@ -168,6 +209,10 @@ pub fn run(cwd: &str, args: &[&str]) -> Outcome {
 
 		if fds[1].revents != 0 && leaving.is_none() {
 			let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
+			if n > 0 && ctrl_z_hangs_up && has_ctrl_z(&buf[..n as usize]) {
+				hang_up(master, child);
+				return Outcome::Detached;
+			}
 			if n > 0 && master.write_all(&buf[..n as usize]).is_err() {
 				break;
 			}
@@ -222,5 +267,15 @@ mod tests {
 		assert_eq!(left_alt(b"x\x1b[?1049ly"), Some(true));
 		assert_eq!(left_alt(b"\x1b[?1049l..\x1b[?1049h"), Some(false));
 		assert_eq!(left_alt(b"\x1b[?1049h..\x1b[?1049l"), Some(true));
+	}
+
+	#[test]
+	fn detects_ctrl_z() {
+		assert!(has_ctrl_z(b"\x1a"));
+		assert!(has_ctrl_z(b"ab\x1b[122;5u"));
+		assert!(has_ctrl_z(b"\x1b[122;5:1u"));
+		assert!(has_ctrl_z(b"\x1b[27;5;122~"));
+		assert!(!has_ctrl_z(b"z\x1b[122u"));
+		assert!(!has_ctrl_z(b"\x1b[122;2u"));
 	}
 }

@@ -5,6 +5,8 @@ use std::thread;
 
 use notify::{EventKind, RecursiveMode, Watcher};
 
+use crate::agy;
+use crate::backend::{self, Backend};
 use crate::sessions::{Session, fetch_sessions};
 use crate::store::Confirmed;
 use crate::transcripts::{Transcripts, claude_dir};
@@ -40,6 +42,20 @@ pub fn spawn_fetcher(tx: Sender<Msg>) -> Sender<Confirmed> {
 			while let Ok(newer) = req_rx.try_recv() {
 				confirmed = newer;
 			}
+			if backend::is_agy() {
+				// agy 打开会话时就会写对话文件，看不出你有没有回复过，只靠“又在进行中”判断
+				let result = agy::fetch_sessions();
+				if tx
+					.send(Msg::Fetched {
+						result,
+						revived: Vec::new(),
+					})
+					.is_err()
+				{
+					break;
+				}
+				continue;
+			}
 			let result = fetch_sessions();
 			let revived = if result.is_ok() {
 				transcripts.replied_after_confirm(&confirmed)
@@ -65,6 +81,9 @@ fn is_state_file(path: &Path) -> bool {
 // 不递归监听 jobs：每个任务的 tmp 目录里可能有成千上万个文件。新任务目录出现时再单独加上。
 // 监听在自己的线程里建立，不耽误界面启动；失败也没关系，界面还会定时刷新
 pub fn spawn_watcher(tx: Sender<Msg>) {
+	if backend::is_agy() {
+		return spawn_agy_watcher(tx);
+	}
 	thread::spawn(move || {
 		let (event_tx, event_rx) = channel::<notify::Result<notify::Event>>();
 		let Ok(mut watcher) = notify::recommended_watcher(event_tx) else {
@@ -97,8 +116,44 @@ pub fn spawn_watcher(tx: Sender<Msg>) {
 	});
 }
 
+// hagy：会话打开（presence 里出现新的锁文件）、agy 更新会话缓存、hagy 的任务写下结果时刷新。
+// 会话关掉只是放开锁，没有文件变化，靠定时刷新
+fn spawn_agy_watcher(tx: Sender<Msg>) {
+	thread::spawn(move || {
+		let (event_tx, event_rx) = channel::<notify::Result<notify::Event>>();
+		let Ok(mut watcher) = notify::recommended_watcher(event_tx) else {
+			return;
+		};
+		let jobs = agy::jobs_dir();
+		let _ = std::fs::create_dir_all(&jobs);
+		let _ = watcher.watch(&agy::presence_dir(), RecursiveMode::NonRecursive);
+		let _ = watcher.watch(&agy::cache_dir(), RecursiveMode::NonRecursive);
+		let _ = watcher.watch(&jobs, RecursiveMode::Recursive);
+		for event in event_rx {
+			let Ok(event) = event else { continue };
+			if matches!(event.kind, EventKind::Access(_)) {
+				continue;
+			}
+			if tx.send(Msg::Changed).is_err() {
+				break;
+			}
+		}
+	});
+}
+
 // 用 claude --bg 在项目目录里启动后台任务，返回它打印的 ID
 pub fn dispatch_task(tx: Sender<Msg>, what: &'static str, cwd: String, prompt: String, args: Vec<String>) {
+	if backend::current() == Backend::Agy {
+		let result = agy::dispatch(&cwd, &prompt, &args);
+		let _ = tx.send(Msg::Dispatched {
+			what,
+			cwd,
+			prompt,
+			args,
+			result,
+		});
+		return;
+	}
 	thread::spawn(move || {
 		let output = Command::new("claude")
 			.args(&args)
