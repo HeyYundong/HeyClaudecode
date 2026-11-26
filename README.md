@@ -22,37 +22,11 @@
 
 ```bash
 git clone <repo> HeyClaudeCode && cd HeyClaudeCode
-cargo install --path .                           # 装到 ~/.cargo/bin/hcc（和 hagy）
+cargo install --path .                           # 装到 ~/.cargo/bin/hcc
 ln -sf ~/.cargo/bin/hcc ~/.cargo/bin/heyclaude   # 可选：也能用 heyclaude 启动
 ```
 
 HeyClaude 是一个约 1 MB 的独立程序，启动只要几毫秒，常驻内存约 4 MB。以前用 `npm link` 装过 Node.js 版的话，先 `npm rm -g heyclaude` 删掉，免得 PATH 里的旧命令盖住新的。
-
-## hagy：管理 Antigravity CLI（agy）的任务
-
-`hagy` 是同一套界面，管的是 [Antigravity CLI](https://antigravity.google)（`agy`）的会话。它和 hcc 是两个独立的工具：项目列表、确认记录、改过的标题各存各的（hagy 的在 `~/.config/heyagy/`，hcc 的在 `~/.config/heyclaude/`）。
-
-```bash
-hagy                                          # 和 hcc 一样的项目列表 → 任务列表
-hagy --model gemini-4-neon --effort high      # 其余参数在按 n 时传给 agy
-```
-
-agy 没有 `claude agents --json` 和 `--bg` 这样的命令，所以 hagy 是这样做的：
-
-| | hcc | hagy |
-| --- | --- | --- |
-| 启动任务 | `claude --bg <内容>` | 在项目目录里后台跑 `agy -p <内容> --output-format json`，脱离终端，关掉 hagy 也会跑完。输出和退出码记在 `~/.local/share/heyagy/jobs/` |
-| 读会话 | `claude agents --json --all` | hagy 自己的任务记录 + agy 的会话缓存 `~/.gemini/antigravity-cli/cache/conversation_metadata.json`（agy 里直接开的会话也会列出来） |
-| 进行中 | Claude Code 记录的状态 | agy 打开会话时锁着 `presence/<会话>.lock`，从 `/proc/locks` 看谁锁着：锁着就是进行中（后台任务在跑，或你在别处开着它） |
-| 失败 | 出错 / 被停止 | agy 返回 `status: ERROR`（它出错时退出码也是 0）算出错；进程没写下退出码就没了算已停止 |
-| 需要输入 | Claude 在等你 | 没有：`agy -p` 不会停下来等授权 |
-| 打开会话 | `claude attach <ID>` | `agy --conversation <ID>` |
-
-**从会话回来**：按 Ctrl+Z，或在 agy 里输入 `/exit`。agy 自己的 Ctrl+Z 是“挂起到 shell”，在 hagy 里没有 shell 可回，所以 hagy 接管 Ctrl+Z：像关掉终端窗口一样结束这个 agy 进程（对话已经存好，随时能再打开）。agy 还在干活时按 Ctrl+Z 会打断这一轮。
-
-新建任务时 Tab 在 agy 的模型之间切换（`gemini-4-neon`、`gemini-4-carbon`…，列表来自 `agy models`，启动时在后台更新一次并缓存），Shift+Tab 只在这个模型支持的思考强度里切换（比如 neon 有 xhigh、flash 最高 high，Orchestrator 不分强度）；换了模型、原来选的强度新模型不支持时自动退回默认。没选时用 agy 的设置。任务失败时选中按 Enter 能看到 agy 的报错。
-
-只在 Linux 上可用（读 `/proc`）。agy 的数据目录是它的内部存储，hagy 只读不写；默认是 `~/.gemini/antigravity-cli`，可以用 `HAGY_AGY_DIR` 改。
 
 ## 两种布局
 
@@ -214,11 +188,8 @@ hcc --model opus --effort high
 
 Rust 写的，界面用 [ratatui](https://ratatui.rs)。`cargo test` 跑单元测试。
 
-- `src/main.rs`、`src/bin/hagy.rs`：两个命令的入口，分别以 Claude Code 和 agy 启动同一套界面
-- `src/backend.rs`：当前管的是哪种 agent，以及随之变化的命令和文案
-- `src/agy.rs`：hagy 的会话读取（任务记录、agy 会话缓存、`/proc/locks`）和后台启动 `agy -p`
-- `src/cli.rs`：解析参数、设置终端；主循环是“处理按键和后台消息 → 重画 → 需要时打开会话，回来后回到任务列表”
-- `src/attach.rs`：在 HeyClaude 自己开的伪终端里运行 `claude attach`（或 `agy --conversation`），按键和输出原样转发。claude 一离开它的界面（不用等进程退出，大约快半秒），HeyClaude 就拿回终端，之后按的键由 HeyClaude 处理；agy 则由 HeyClaude 接管 Ctrl+Z，挂断 agy 后回来
+- `src/main.rs`：入口。解析参数、设置终端；主循环是“处理按键和后台消息 → 重画 → 需要时打开会话，回来后回到任务列表”
+- `src/attach.rs`：在 HeyClaude 自己开的伪终端里运行 `claude attach`，按键和输出原样转发。claude 一离开它的界面（不用等进程退出，大约快半秒），HeyClaude 就拿回终端，之后按的键由 HeyClaude 处理
 - `src/input.rs`：新任务和改标题的输入框（光标移动、在光标处编辑、按显示宽度折行）
 - `src/app.rs`：界面状态、按键处理和绘制（项目列表、添加、删除确认、任务列表的两种布局、新任务、帮助页）
 - `src/worker.rs`：后台线程：调用 `claude agents` 刷新、监听任务状态文件、用 `claude --bg` 启动新任务

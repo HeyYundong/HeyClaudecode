@@ -2,21 +2,12 @@
 name = "heyclaude"
 version = "0.2.0"
 edition = "2024"
-description = "按项目分组管理 Claude Code / Antigravity CLI 后台任务的终端 TUI（不修改它们本身）"
+description = "按项目分组管理 Claude Code 后台任务的终端 TUI（不修改 Claude Code 本身）"
 license = "MIT"
-
-[lib]
-name = "heyclaude"
-path = "src/lib.rs"
 
 [[bin]]
 name = "hcc"
 path = "src/main.rs"
-
-# 同一套界面管理 Antigravity CLI（agy）的任务
-[[bin]]
-name = "hagy"
-path = "src/bin/hagy.rs"
 
 [dependencies]
 chrono = "0.4"

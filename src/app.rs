@@ -9,7 +9,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::backend;
 use crate::input::Input;
 use crate::model::{self, Choice};
 use crate::sessions::{Counts, Groups, STATUS_ORDER, Session, Status, group_sessions, reactivated, stats_for, suggest_paths};
@@ -272,10 +271,7 @@ fn list_help() -> Vec<HelpSection> {
 			("↑ ↓ / k j", "选择项目".into()),
 			("Enter", "进入项目".into()),
 			("1–9…", "按序号直接进入（超过 9 个可以连按多位）".into()),
-			(
-				"n",
-				format!("新对话：不属于任何项目，在「对话」里用 {} 开始", backend::current().start_cmd()),
-			),
+			("n", "新对话：不属于任何项目，在「对话」里用 claude --bg 开始".into()),
 			("a", "添加项目".into()),
 			("d", "从列表移除项目（目录和会话不动）".into()),
 			("r", "刷新（任务状态一变就会自动刷新）".into()),
@@ -284,22 +280,12 @@ fn list_help() -> Vec<HelpSection> {
 	)]
 }
 
-fn open_help() -> String {
-	if backend::is_agy() {
-		// agy 自己的 Ctrl+Z 是挂起到 shell，在这里没有 shell 可回，所以由 HeyAgy 接管：
-		// 结束这个 agy 进程（对话已经存好，随时能再打开）
-		"打开会话（agy --conversation），按 Ctrl+Z 或 /exit 回来；还在干活时按 Ctrl+Z 会打断它".into()
-	} else {
-		"打开会话（claude attach），在会话里按 Ctrl+Z 回来".into()
-	}
-}
-
 fn session_help(layout: Layout, chat: bool) -> Vec<HelpSection> {
 	let mut sections = vec![(
 		"任务",
 		vec![
 			("↑ ↓ / k j", "选择任务".into()),
-			("Enter / o", open_help()),
+			("Enter / o", "打开会话（claude attach），在会话里按 Ctrl+Z 回来".into()),
 			(
 				"Enter",
 				format!("在“还有 N 个”那一行上：展开或收起这一组（默认只显示最新 {RECENT} 个）"),
@@ -307,19 +293,13 @@ fn session_help(layout: Layout, chat: bool) -> Vec<HelpSection> {
 			("c", "确认待确认的任务，它变成完成；在完成的任务上按则取消确认".into()),
 			("C", "确认这个项目下全部待确认任务".into()),
 			("u", "撤销最近一次确认".into()),
-			(
-				"e",
-				format!(
-					"改标题：Enter 保存，清空后保存恢复原名（只改 {} 里显示的名字）",
-					backend::current().brand()
-				),
-			),
+			("e", "改标题：Enter 保存，清空后保存恢复原名（只改 HeyClaude 里显示的名字）".into()),
 			(
 				"n",
 				if chat {
-					format!("新对话：用 {} 开始，不属于任何项目", backend::current().start_cmd())
+					"新对话：用 claude --bg 开始，不属于任何项目".into()
 				} else {
-					format!("新任务：在项目目录里用 {} 启动", backend::current().start_cmd())
+					"新任务：在项目目录里用 claude --bg 启动".into()
 				},
 			),
 			("r", "刷新".into()),
@@ -948,8 +928,7 @@ impl App {
 					.model()
 					.map(str::to_string)
 					.or_else(|| model::default_model(&self.forwarded, &cwd));
-				let default = model::default_effort(&self.forwarded, &cwd, model_used.as_deref());
-				choice.next_effort(model_used.as_deref(), default.as_deref());
+				choice.next_effort(model::default_effort(&self.forwarded, &cwd, model_used.as_deref()).as_deref());
 			}
 			KeyCode::Enter => {
 				let args = choice.args(&self.forwarded);
@@ -1163,7 +1142,7 @@ impl App {
 	}
 
 	fn brand() -> Span<'static> {
-		span(backend::current().brand(), red().add_modifier(Modifier::BOLD))
+		span("HeyClaude", red().add_modifier(Modifier::BOLD))
 	}
 
 	// 所有页面的左上角都是红色的 HeyClaude，进入下一级时在后面接“› 名字”
@@ -1180,26 +1159,25 @@ impl App {
 			Screen::NewTask { input, choice, .. } if self.current().is_some() => {
 				let project = self.current().unwrap();
 				let chat = self.in_chat();
-				let b = backend::current();
 				let (title, about, placeholder, start) = if chat {
 					(
 						"对话 › 新对话".to_string(),
-						format!("不属于任何项目，用 {} 开一个对话", b.start_cmd()),
-						format!("想问 {} 什么？", b.agent()),
+						"不属于任何项目，用 claude --bg 开一个对话".to_string(),
+						"想问 Claude 什么？",
 						"开始",
 					)
 				} else {
 					(
 						format!("{} › 新任务", project.name),
-						format!("在 {} 里用 {} 启动一个后台任务", project.name, b.start_cmd()),
-						format!("要 {} 做什么？", b.agent()),
+						format!("在 {} 里用 claude --bg 启动一个后台任务", project.name),
+						"要 Claude 做什么？",
 						"启动",
 					)
 				};
 				let mut lines = top_bar(Self::crumb(&title), vec![], inner);
 				lines.push(Line::from(span(about, dim())));
 				lines.push(Line::default());
-				lines.extend(input.lines(span("❯ ", red()), &placeholder, inner));
+				lines.extend(input.lines(span("❯ ", red()), placeholder, inner));
 				lines.push(Line::default());
 				lines.extend(self.choice_lines(choice, &project.path, inner));
 				lines.extend(key_hints(
@@ -1233,18 +1211,8 @@ impl App {
 			row.extend(value);
 			row
 		};
-		let (unknown_model, unknown_effort) = if backend::is_agy() {
-			("跟随 agy 设置", "跟随模型")
-		} else {
-			("跟随账号", model::DEFAULT_EFFORT)
-		};
-		let model_row = item("模型", value(choice.model(), default_model, unknown_model));
-		let effort_row = if model::efforts(model_used.as_deref()).is_empty() && choice.effort().is_none() {
-			// 这个模型没有强度档（比如 agy 的 Orchestrator），不传 --effort
-			item("思考强度", vec![span("这个模型不分", dim())])
-		} else {
-			item("思考强度", value(choice.effort(), default_effort, unknown_effort))
-		};
+		let model_row = item("模型", value(choice.model(), default_model, "跟随账号"));
+		let effort_row = item("思考强度", value(choice.effort(), default_effort, model::DEFAULT_EFFORT));
 		let (model_line, effort_line) = (Line::from(model_row), Line::from(effort_row));
 		// 一行放得下就并排，否则各占一行
 		if line_width(&model_line) + 4 + line_width(&effort_line) > inner {
@@ -1737,7 +1705,6 @@ mod tests {
 				state: Some(state.into()),
 				status: None,
 				title: None,
-				error: None,
 			})
 			.collect()
 	}
