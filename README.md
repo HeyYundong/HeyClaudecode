@@ -30,7 +30,7 @@ HeyClaude 是一个约 1 MB 的独立程序，启动只要几毫秒，常驻内�
 
 ## hagy：管理 Antigravity CLI（agy）的任务
 
-`hagy` 是同一套界面，管的是 [Antigravity CLI](https://antigravity.google)（`agy`）的会话。项目列表、确认记录、改过的标题和 hcc 共用。
+`hagy` 是同一套界面，管的是 [Antigravity CLI](https://antigravity.google)（`agy`）的会话。它和 hcc 是两个独立的工具：项目列表、确认记录、改过的标题各存各的（hagy 的在 `~/.config/heyagy/`，hcc 的在 `~/.config/heyclaude/`）。
 
 ```bash
 hagy                                          # 和 hcc 一样的项目列表 → 任务列表
@@ -41,7 +41,7 @@ agy 没有 `claude agents --json` 和 `--bg` 这样的命令，所以 hagy 是�
 
 | | hcc | hagy |
 | --- | --- | --- |
-| 启动任务 | `claude --bg <内容>` | 在项目目录里后台跑 `agy -p <内容> --output-format json`，脱离终端，关掉 hagy 也会跑完。输出和退出码记在 `~/.local/share/heyclaude/agy-jobs/` |
+| 启动任务 | `claude --bg <内容>` | 在项目目录里后台跑 `agy -p <内容> --output-format json`，脱离终端，关掉 hagy 也会跑完。输出和退出码记在 `~/.local/share/heyagy/jobs/` |
 | 读会话 | `claude agents --json --all` | hagy 自己的任务记录 + agy 的会话缓存 `~/.gemini/antigravity-cli/cache/conversation_metadata.json`（agy 里直接开的会话也会列出来） |
 | 进行中 | Claude Code 记录的状态 | agy 打开会话时锁着 `presence/<会话>.lock`，从 `/proc/locks` 看谁锁着：锁着就是进行中（后台任务在跑，或你在别处开着它） |
 | 失败 | 出错 / 被停止 | agy 返回 `status: ERROR`（它出错时退出码也是 0）算出错；进程没写下退出码就没了算已停止 |
@@ -50,7 +50,7 @@ agy 没有 `claude agents --json` 和 `--bg` 这样的命令，所以 hagy 是�
 
 **从会话回来**：按 Ctrl+Z，或在 agy 里输入 `/exit`。agy 自己的 Ctrl+Z 是“挂起到 shell”，在 hagy 里没有 shell 可回，所以 hagy 接管 Ctrl+Z：像关掉终端窗口一样结束这个 agy 进程（对话已经存好，随时能再打开）。agy 还在干活时按 Ctrl+Z 会打断这一轮。
 
-新建任务时 Tab 在 agy 的模型之间切换（`gemini-4-neon`、`gemini-4-carbon`… 不带强度后缀），Shift+Tab 选思考强度（`--effort`）；没选时用 agy 的设置。
+新建任务时 Tab 在 agy 的模型之间切换（`gemini-4-neon`、`gemini-4-carbon`…，列表来自 `agy models`，启动时在后台更新一次并缓存），Shift+Tab 只在这个模型支持的思考强度里切换（比如 neon 有 xhigh、flash 最高 high，Orchestrator 不分强度）；换了模型、原来选的强度新模型不支持时自动退回默认。没选时用 agy 的设置。任务失败时选中按 Enter 能看到 agy 的报错。
 
 只在 Linux 上可用（读 `/proc`）。agy 的数据目录是它的内部存储，hagy 只读不写；默认是 `~/.gemini/antigravity-cli`，可以用 `HAGY_AGY_DIR` 改。
 

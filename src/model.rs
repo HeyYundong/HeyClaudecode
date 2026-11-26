@@ -1,6 +1,6 @@
 // 新建任务时选的模型和思考强度。
 // 默认值按 Claude Code 的规则找：hcc 的启动参数 → 环境变量（模型）→ 项目设置 → 用户设置。
-// hagy 用 agy 的模型（不带强度后缀的名字，强度用 --effort 另给），默认值看启动参数和 agy 的设置
+// hagy 用 agy 的模型（`agy models` 拆成模型和它支持的强度，强度用 --effort 另给），默认值看启动参数和 agy 的设置
 use std::path::Path;
 
 use serde_json::Value;
@@ -8,19 +8,20 @@ use serde_json::Value;
 use crate::{agy, backend, store};
 
 pub const MODELS: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
-pub const AGY_MODELS: [&str; 7] = [
-	"gemini-4-neon",
-	"gemini-4-carbon",
-	"gemini-4-argon",
-	"gemini-4-hydrogen",
-	"gemini-3.8-flash",
-	"claude-opus-5-5",
-	"claude-sonnet-5-5",
-];
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
-fn models() -> &'static [&'static str] {
-	if backend::is_agy() { &AGY_MODELS } else { &MODELS }
+// 能选的模型。hagy 的来自 `agy models`
+fn models() -> Vec<&'static str> {
+	if backend::is_agy() { agy::model_ids() } else { MODELS.to_vec() }
+}
+
+// 这个模型能选的强度。Claude 的模型都一样；agy 的每个模型不同，不认识的模型不给选
+pub fn efforts(model: Option<&str>) -> Vec<&'static str> {
+	if backend::is_agy() {
+		agy::efforts_for(model).to_vec()
+	} else {
+		EFFORTS.to_vec()
+	}
 }
 
 // 启动参数里 --name value 或 --name=value 的值
@@ -114,13 +115,18 @@ pub fn default_effort(forwarded: &[String], cwd: &str, model: Option<&str>) -> O
 // 新建任务界面上的选择；None 表示用默认
 #[derive(Default, Clone, Copy)]
 pub struct Choice {
-	pub model: Option<usize>,
-	pub effort: Option<usize>,
+	pub model: Option<&'static str>,
+	pub effort: Option<&'static str>,
 }
 
 // 转一圈的顺序：默认值 → 列表里排在默认值后面的 → 绕回前面的 → 回到默认值。
 // 和默认值一样的那项跳过，免得同一个名字出现两次
-fn cycle(current: Option<usize>, list: &[&str], default: Option<&str>) -> Option<usize> {
+fn cycle(current: Option<&str>, list: &[&'static str], default: Option<&str>) -> Option<&'static str> {
+	let current = current.and_then(|c| list.iter().position(|&x| x == c));
+	cycle_index(current, list, default).map(|i| list[i])
+}
+
+fn cycle_index(current: Option<usize>, list: &[&str], default: Option<&str>) -> Option<usize> {
 	let at = default.and_then(|d| list.iter().position(|&x| x == d));
 	let start = at.map_or(0, |i| i + 1);
 	let order: Vec<usize> = (0..list.len())
@@ -135,20 +141,27 @@ fn cycle(current: Option<usize>, list: &[&str], default: Option<&str>) -> Option
 }
 
 impl Choice {
+	// default_effort_for：换了模型以后，新模型默认用的强度
 	pub fn next_model(&mut self, default: Option<&str>) {
-		self.model = cycle(self.model, models(), default);
+		self.model = cycle(self.model, &models(), default);
+		// 选过的强度新模型不支持，就退回默认
+		let used = self.model.or(default);
+		if self.effort.is_some_and(|e| !efforts(used).contains(&e)) {
+			self.effort = None;
+		}
 	}
 
-	pub fn next_effort(&mut self, default: Option<&str>) {
-		self.effort = cycle(self.effort, &EFFORTS, default);
+	// model：现在要用的模型（选的或者默认的），强度只在它支持的里面转
+	pub fn next_effort(&mut self, model: Option<&str>, default: Option<&str>) {
+		self.effort = cycle(self.effort, &efforts(model), default);
 	}
 
 	pub fn model(&self) -> Option<&'static str> {
-		self.model.map(|i| models()[i])
+		self.model
 	}
 
 	pub fn effort(&self) -> Option<&'static str> {
-		self.effort.map(|i| EFFORTS[i])
+		self.effort
 	}
 
 	// 传给 claude --bg 的参数：选了的就替换掉启动参数里的同名参数
@@ -187,13 +200,13 @@ mod tests {
 		let c = Choice::default();
 		assert_eq!(c.args(&fwd), fwd);
 		let c = Choice {
-			model: Some(2),
+			model: Some("sonnet"),
 			effort: None,
 		};
 		assert_eq!(c.args(&fwd), v(&["--effort=high", "--verbose", "--model", "sonnet"]));
 		let c = Choice {
 			model: None,
-			effort: Some(4),
+			effort: Some("max"),
 		};
 		assert_eq!(c.args(&fwd), v(&["--model", "opus", "--verbose", "--effort", "max"]));
 	}

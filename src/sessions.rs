@@ -30,6 +30,9 @@ pub struct Session {
 	// 你在 HeyClaude 里改过的标题（存在 titles.json），优先于 Claude Code 给的名字
 	#[serde(skip)]
 	pub title: Option<String>,
+	// hagy：任务失败的原因（agy 的报错）
+	#[serde(skip)]
+	pub error: Option<String>,
 }
 
 impl Session {
@@ -351,6 +354,7 @@ mod tests {
 			state: Some(state.into()),
 			status: None,
 			title: None,
+			error: None,
 		}
 	}
 

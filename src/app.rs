@@ -948,7 +948,8 @@ impl App {
 					.model()
 					.map(str::to_string)
 					.or_else(|| model::default_model(&self.forwarded, &cwd));
-				choice.next_effort(model::default_effort(&self.forwarded, &cwd, model_used.as_deref()).as_deref());
+				let default = model::default_effort(&self.forwarded, &cwd, model_used.as_deref());
+				choice.next_effort(model_used.as_deref(), default.as_deref());
 			}
 			KeyCode::Enter => {
 				let args = choice.args(&self.forwarded);
@@ -1238,7 +1239,12 @@ impl App {
 			("跟随账号", model::DEFAULT_EFFORT)
 		};
 		let model_row = item("模型", value(choice.model(), default_model, unknown_model));
-		let effort_row = item("思考强度", value(choice.effort(), default_effort, unknown_effort));
+		let effort_row = if model::efforts(model_used.as_deref()).is_empty() && choice.effort().is_none() {
+			// 这个模型没有强度档（比如 agy 的 Orchestrator），不传 --effort
+			item("思考强度", vec![span("这个模型不分", dim())])
+		} else {
+			item("思考强度", value(choice.effort(), default_effort, unknown_effort))
+		};
 		let (model_line, effort_line) = (Line::from(model_row), Line::from(effort_row));
 		// 一行放得下就并排，否则各占一行
 		if line_width(&model_line) + 4 + line_width(&effort_line) > inner {
@@ -1731,6 +1737,7 @@ mod tests {
 				state: Some(state.into()),
 				status: None,
 				title: None,
+				error: None,
 			})
 			.collect()
 	}

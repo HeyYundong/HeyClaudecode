@@ -59,7 +59,7 @@ fn agy_usage() -> String {
 
 用法: hagy [--tabs] [agy 的参数…]
 
-  和 hcc 一样的界面，管的是 agy 的会话。项目列表、确认记录和 hcc 共用。
+  和 hcc 一样的界面，管的是 agy 的会话。项目列表、确认记录、标题和 hcc 分开存。
 
   按 n 新建任务：在项目目录里后台运行 `agy -p <内容>`，关掉 HeyAgy 也会继续跑完。
   任务记录（输出、退出码）放在 {}。
@@ -144,7 +144,11 @@ fn attach(project: &Project, session: &Session) -> Option<(String, Color)> {
 		Backend::Agy => {
 			// 后台任务刚启动、agy 还没建好会话时没有会话 ID
 			if session.session_id.starts_with("job:") {
-				return Some(("这个任务还没有会话，稍后再打开".into(), Color::Yellow));
+				// agy 一开始就报错（比如模型不支持这个强度）时根本没建会话，显示它的报错
+				return Some(match &session.error {
+					Some(e) => (format!("任务失败：{e}"), Color::Red),
+					None => ("这个任务还没有会话，稍后再打开".into(), Color::Yellow),
+				});
 			}
 			attach::run(b.program(), cwd, &["--conversation", &session.session_id], true)
 		}
@@ -255,6 +259,9 @@ fn run(layout: Layout, projects: Vec<Project>, forwarded: Vec<String>) -> io::Re
 pub fn main(which: Backend) -> ExitCode {
 	backend::set(which);
 	let args: Vec<String> = std::env::args().skip(1).collect();
+	if which == Backend::Agy && !args.iter().any(|a| a == "-h" || a == "--help" || a == "-v" || a == "--version") {
+		crate::agy::refresh_models();
+	}
 	if args.iter().any(|a| a == "-h" || a == "--help") {
 		println!("{}", usage());
 		return ExitCode::SUCCESS;

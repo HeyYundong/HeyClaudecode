@@ -3,7 +3,7 @@
 // agy 没有 claude 那样的 `agents --json` 和 `--bg`，所以：
 //   启动任务  在项目目录里后台跑 `agy -p <内容> --output-format json`，脱离终端，
 //             HeyClaude 退出也不影响。任务记录（目录、内容、进程号、输出、退出码）
-//             放在 HeyClaude 自己的数据目录 agy-jobs/<任务>/ 里
+//             放在 hagy 自己的数据目录 ~/.local/share/heyagy/jobs/<任务>/ 里
 //   读会话    自己的任务记录 + agy 的会话缓存 cache/conversation_metadata.json（标题、目录），
 //             以及 presence/<会话>.lock：agy 打开一个会话时一直锁着这个文件，
 //             从 /proc/locks 能看出谁锁着，锁着就是进行中
@@ -15,6 +15,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -40,7 +41,7 @@ pub fn cache_dir() -> PathBuf {
 
 // hagy 启动的任务记录
 pub fn jobs_dir() -> PathBuf {
-	store::data_dir().join("agy-jobs")
+	store::data_dir().join("jobs")
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -61,6 +62,8 @@ struct Output {
 	conversation_id: String,
 	#[serde(default)]
 	status: String,
+	#[serde(default)]
+	error: String,
 }
 
 fn parse_output(text: &str) -> Option<Output> {
@@ -226,6 +229,7 @@ fn session(id: &str, cwd: Option<String>, started: Option<f64>, name: String, st
 		state: Some(state.into()),
 		status: None,
 		title: None,
+		error: None,
 	}
 }
 
@@ -277,6 +281,10 @@ pub fn fetch_sessions() -> Result<Vec<Session>, String> {
 			.filter(|t| !t.is_empty())
 			.unwrap_or_else(|| first_line(&job.prompt));
 		let mut s = session(&id, Some(job.cwd), Some(job.started_at), name, state);
+		if state == "failed" {
+			let err = output.as_ref().map(|o| o.error.trim().to_string()).filter(|e| !e.is_empty());
+			s.error = err.or_else(|| fs::read_to_string(dir.join("err.txt")).ok().map(|t| first_line(&t)));
+		}
 		if id.starts_with("job:") {
 			s.id = String::new();
 		}
@@ -371,33 +379,171 @@ pub fn dispatch(cwd: &str, prompt: &str, args: &[String]) -> Result<String, Stri
 	Ok(id)
 }
 
-// 新建任务时默认的模型：启动参数 → agy 的设置。设置里存的是显示名（Gemini 4 Neon (XHigh)），
-// 换成 --model 认的名字（gemini-4-neon），括号里的是思考强度
+// 新建任务时能选的模型。`agy models` 列出的是“模型-强度”（gemini-4-neon-xhigh），
+// 这里拆成模型（gemini-4-neon，传给 --model）和它支持的强度（传给 --effort）。
+// 每个模型支持的强度不一样（比如 neon 有 xhigh 没有 max，flash 最高 high），
+// 不带强度后缀的（Orchestrator）就没有强度可选。
+//
+// `agy models` 要联网，几秒钟才回来：启动时在后台跑一次，结果存成缓存给下次用；
+// 这次先用上次的缓存，没有缓存就用内置的这份
+const BUILTIN_MODELS: &str = "gemini-4-neon-high\tGemini 4 Neon (High)
+gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)
+gemini-4-neon-medium\tGemini 4 Neon (Medium)
+gemini-4-neon-low\tGemini 4 Neon (Low)
+gemini-4-carbon-medium\tGemini 4 Carbon (Medium)
+gemini-4-carbon-high\tGemini 4 Carbon (High)
+gemini-4-carbon-low\tGemini 4 Carbon (Low)
+gemini-4-argon-medium\tGemini 4 Argon (Medium)
+gemini-4-argon-high\tGemini 4 Argon (High)
+gemini-4-argon-low\tGemini 4 Argon (Low)
+gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)
+gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)
+gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)
+gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)
+gemini-pro-orchestrator-neon\tOrchestrator (Neon)
+gemini-pro-orchestrator\tOrchestrator (Carbon)
+gemini-pro-orchestrator-argon\tOrchestrator (Argon)
+gemini-3.8-flash-high\tGemini 3.8 Flash (High)
+gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)
+gemini-3.8-flash-low\tGemini 3.8 Flash (Low)
+claude-opus-5-5-low\tClaude Opus 5.5 (Low)
+claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)
+claude-opus-5-5-high\tClaude Opus 5.5 (High)
+claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)
+claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)
+claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)
+gpt-oss-120b-medium\tGPT-OSS 120B (Medium)
+";
+
+// 强度从低到高
+const EFFORT_ORDER: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+pub struct Model {
+	pub id: &'static str,
+	pub efforts: Vec<&'static str>,
+	// 显示名（不带强度）→ 这一项，用来认 agy 设置里存的显示名
+	names: Vec<(&'static str, Option<&'static str>)>,
+}
+
+fn models_cache() -> PathBuf {
+	store::data_dir().join("models.txt")
+}
+
+// 每行“ID<Tab>显示名”。按第一次出现的顺序排模型，强度按从低到高排
+fn parse_models(text: &str) -> Vec<Model> {
+	let mut models: Vec<Model> = Vec::new();
+	for line in text.lines() {
+		let mut cols = line.split('\t');
+		let (Some(full), name) = (
+			cols.next().map(str::trim).filter(|s| !s.is_empty()),
+			cols.next().unwrap_or("").trim(),
+		) else {
+			continue;
+		};
+		let full: &'static str = Box::leak(full.to_string().into_boxed_str());
+		let name: &'static str = Box::leak(name.to_string().into_boxed_str());
+		let (id, effort) = match full.rsplit_once('-') {
+			Some((base, e)) if EFFORT_ORDER.contains(&e) => (base, Some(e)),
+			_ => (full, None),
+		};
+		let at = match models.iter().position(|m| m.id == id) {
+			Some(i) => i,
+			None => {
+				models.push(Model {
+					id,
+					efforts: Vec::new(),
+					names: Vec::new(),
+				});
+				models.len() - 1
+			}
+		};
+		let m = &mut models[at];
+		if let Some(e) = effort
+			&& !m.efforts.contains(&e)
+		{
+			m.efforts.push(e);
+		}
+		m.names.push((name, effort));
+	}
+	for m in &mut models {
+		m.efforts.sort_by_key(|e| EFFORT_ORDER.iter().position(|x| x == e));
+	}
+	models
+}
+
+static MODELS: OnceLock<Vec<Model>> = OnceLock::new();
+
+pub fn models() -> &'static [Model] {
+	MODELS.get_or_init(|| {
+		let cached = fs::read_to_string(models_cache()).map(|t| parse_models(&t)).unwrap_or_default();
+		if cached.is_empty() { parse_models(BUILTIN_MODELS) } else { cached }
+	})
+}
+
+pub fn model_ids() -> Vec<&'static str> {
+	models().iter().map(|m| m.id).collect()
+}
+
+// 这个模型能选的强度；不认识的模型就不给选，免得传了它不支持的
+pub fn efforts_for(model: Option<&str>) -> &'static [&'static str] {
+	match model.and_then(|id| models().iter().find(|m| m.id == id)) {
+		Some(m) => &m.efforts,
+		None => &[],
+	}
+}
+
+// 后台跑一次 agy models，更新缓存
+pub fn refresh_models() {
+	std::thread::spawn(|| {
+		let Ok(out) = Command::new("agy")
+			.arg("models")
+			.stdin(Stdio::null())
+			.stderr(Stdio::null())
+			.output()
+		else {
+			return;
+		};
+		let text = String::from_utf8_lossy(&out.stdout).to_string();
+		if out.status.success() && !parse_models(&text).is_empty() {
+			let file = models_cache();
+			let _ = fs::create_dir_all(store::data_dir());
+			let tmp = file.with_extension("txt.tmp");
+			if fs::write(&tmp, text).is_ok() {
+				let _ = fs::rename(&tmp, &file);
+			}
+		}
+	});
+}
+
+// agy 设置里的模型，存的是显示名（Gemini 4 Neon (XHigh)）
 fn settings_model() -> Option<String> {
 	let text = fs::read_to_string(agy_dir().join("settings.json")).ok()?;
 	let v: Value = serde_json::from_str(&text).ok()?;
 	v.get("model")?.as_str().map(str::to_string).filter(|s| !s.trim().is_empty())
 }
 
-fn split_display(name: &str) -> (String, Option<String>) {
-	let (base, effort) = match name.rfind('(') {
-		Some(i) if name.ends_with(')') => (&name[..i], Some(name[i + 1..name.len() - 1].trim().to_lowercase())),
-		_ => (name, None),
-	};
-	let id = base.split_whitespace().collect::<Vec<_>>().join("-").to_lowercase();
-	(id, effort)
+// 显示名 → (模型, 强度)
+fn from_display(models: &[Model], name: &str) -> Option<(&'static str, Option<&'static str>)> {
+	models
+		.iter()
+		.find_map(|m| m.names.iter().find(|(n, _)| *n == name).map(|(_, e)| (m.id, *e)))
+}
+
+// 不指定时 agy 用的模型和强度（来自 agy 的设置）
+fn settings_default() -> Option<(&'static str, Option<&'static str>)> {
+	from_display(models(), &settings_model()?)
 }
 
 pub fn default_model() -> Option<String> {
-	settings_model().map(|m| split_display(&m).0)
+	settings_default().map(|(id, _)| id.to_string())
 }
 
 pub fn default_effort(model: Option<&str>) -> Option<String> {
-	let (id, effort) = split_display(&settings_model()?);
+	let (id, effort) = settings_default()?;
 	// 换了别的模型就不知道它默认用多大的强度了
 	match model {
 		Some(m) if m != id => None,
-		_ => effort,
+		_ => effort.map(str::to_string),
 	}
 }
 
@@ -452,11 +598,19 @@ mod tests {
 	}
 
 	#[test]
-	fn display_names_to_model_ids() {
-		assert_eq!(
-			split_display("Gemini 4 Neon (XHigh)"),
-			("gemini-4-neon".into(), Some("xhigh".into()))
-		);
-		assert_eq!(split_display("gemini-3.8-flash"), ("gemini-3.8-flash".into(), None));
+	fn splits_models_and_efforts() {
+		let m = parse_models(BUILTIN_MODELS);
+		let ids: Vec<&str> = m.iter().map(|m| m.id).collect();
+		assert_eq!(&ids[..2], ["gemini-4-neon", "gemini-4-carbon"]);
+		assert!(ids.contains(&"gemini-pro-orchestrator-neon"));
+		let neon = m.iter().find(|m| m.id == "gemini-4-neon").unwrap();
+		assert_eq!(neon.efforts, ["low", "medium", "high", "xhigh"]);
+		let flash = m.iter().find(|m| m.id == "gemini-3.8-flash").unwrap();
+		assert_eq!(flash.efforts, ["low", "medium", "high"]);
+		let orch = m.iter().find(|m| m.id == "gemini-pro-orchestrator").unwrap();
+		assert!(orch.efforts.is_empty());
+		assert_eq!(from_display(&m, "Gemini 4 Neon (XHigh)"), Some(("gemini-4-neon", Some("xhigh"))));
+		assert_eq!(from_display(&m, "Orchestrator (Carbon)"), Some(("gemini-pro-orchestrator", None)));
+		assert!(parse_models("").is_empty());
 	}
 }

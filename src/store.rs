@@ -8,10 +8,15 @@ pub fn home_dir() -> PathBuf {
 	std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }
 
+// hcc 用 heyclaude，hagy 用 heyagy：两个命令的项目列表、确认记录、标题各管各的
+fn app_name() -> &'static str {
+	if crate::backend::is_agy() { "heyagy" } else { "heyclaude" }
+}
+
 pub fn config_dir() -> PathBuf {
 	match std::env::var_os("XDG_CONFIG_HOME") {
-		Some(base) if !base.is_empty() => PathBuf::from(base).join("heyclaude"),
-		_ => home_dir().join(".config").join("heyclaude"),
+		Some(base) if !base.is_empty() => PathBuf::from(base).join(app_name()),
+		_ => home_dir().join(".config").join(app_name()),
 	}
 }
 
@@ -21,11 +26,11 @@ pub fn chat_dir() -> PathBuf {
 	data_dir().join("chat")
 }
 
-// HeyClaude 自己的数据目录：「对话」目录、hagy 启动的任务记录
+// 自己的数据目录：「对话」目录；hagy 还有启动的任务记录和模型列表缓存
 pub fn data_dir() -> PathBuf {
 	match std::env::var_os("XDG_DATA_HOME") {
-		Some(base) if !base.is_empty() => PathBuf::from(base).join("heyclaude"),
-		_ => home_dir().join(".local").join("share").join("heyclaude"),
+		Some(base) if !base.is_empty() => PathBuf::from(base).join(app_name()),
+		_ => home_dir().join(".local").join("share").join(app_name()),
 	}
 }
 
